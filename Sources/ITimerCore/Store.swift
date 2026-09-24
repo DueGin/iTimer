@@ -96,23 +96,15 @@ public final class TaskStore {
     }
 
     public var liveVerdict: FocusVerdict {
-        ParallelismAnalyzer.liveVerdict(runningCount: runningCount, threshold: brainSplitThreshold)
+        statusFrozen ? frozenVerdict : computedLiveVerdict
     }
 
     public var statusLabel: String {
-        StatusText.label(
-            runningCount: runningCount,
-            longestElapsed: longestRunningElapsed,
-            threshold: brainSplitThreshold
-        )
+        statusFrozen ? frozenLabel : computedStatusLabel
     }
 
     public var statusAccessibilityLabel: String {
-        StatusText.accessibility(
-            runningCount: runningCount,
-            threshold: brainSplitThreshold,
-            verdict: liveVerdict
-        )
+        statusFrozen ? frozenAccessibilityLabel : computedStatusAccessibilityLabel
     }
 
     public func startTicking() {
@@ -136,6 +128,48 @@ public final class TaskStore {
     /// updates while the status panel is open.
     public func tick() {
         now = Date()
+    }
+
+    // MARK: - Status label freeze
+
+    /// While the MenuBarExtra panel is open, SwiftUI dismisses the panel on
+    /// ANY label change — including task actions (pause/complete) that change
+    /// the label text. Freeze the label presentation for the panel's lifetime.
+    private var statusFrozen = false
+    private var frozenLabel = ""
+    private var frozenVerdict: FocusVerdict = .idle
+    private var frozenAccessibilityLabel = ""
+
+    public func setStatusFrozen(_ frozen: Bool) {
+        guard frozen != statusFrozen else { return }
+        if frozen {
+            frozenLabel = computedStatusLabel
+            frozenVerdict = computedLiveVerdict
+            frozenAccessibilityLabel = computedStatusAccessibilityLabel
+        }
+        statusFrozen = frozen
+    }
+
+    public var isStatusFrozen: Bool { statusFrozen }
+
+    private var computedLiveVerdict: FocusVerdict {
+        ParallelismAnalyzer.liveVerdict(runningCount: runningCount, threshold: brainSplitThreshold)
+    }
+
+    private var computedStatusLabel: String {
+        StatusText.label(
+            runningCount: runningCount,
+            longestElapsed: longestRunningElapsed,
+            threshold: brainSplitThreshold
+        )
+    }
+
+    private var computedStatusAccessibilityLabel: String {
+        StatusText.accessibility(
+            runningCount: runningCount,
+            threshold: brainSplitThreshold,
+            verdict: liveVerdict
+        )
     }
 
     @discardableResult

@@ -426,6 +426,30 @@ final class StoreTests: XCTestCase {
     }
 
     @MainActor
+    func testStatusLabelFreezeSurvivesMutations() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = makeStore(now: start)
+        _ = store.addTask(title: "甲", at: start)
+        _ = store.addTask(title: "乙", at: start)
+
+        let liveBefore = store.statusLabel
+        store.setStatusFrozen(true)
+        XCTAssertTrue(store.isStatusFrozen)
+        XCTAssertEqual(store.statusLabel, liveBefore)
+        XCTAssertEqual(store.liveVerdict, .mild)
+
+        // Mutations under freeze: label and verdict present stale values.
+        _ = store.pause(id: store.runningTasks[0].id, at: start.addingTimeInterval(60))
+        XCTAssertEqual(store.statusLabel, liveBefore)
+        XCTAssertEqual(store.liveVerdict, .mild)
+
+        store.setStatusFrozen(false)
+        XCTAssertFalse(store.isStatusFrozen)
+        XCTAssertEqual(store.liveVerdict, .focused)
+        XCTAssertTrue(store.statusLabel.hasPrefix("01:"))
+    }
+
+    @MainActor
     func testPauseDropsLiveConcurrency() throws {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         let store = makeStore(now: start)

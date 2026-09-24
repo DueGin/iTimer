@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @State private var draft = ""
     @State private var editingID: UUID?
     @State private var renameDraft = ""
+    @State private var latchedHeight: CGFloat?
     @FocusState private var draftFocused: Bool
 
     var body: some View {
@@ -31,7 +32,20 @@ struct MenuBarView: View {
             }
         }
         .padding(embedded ? 18 : 16)
-        .frame(width: embedded ? nil : 400, height: embedded ? nil : popupHeight)
+        // Height is latched while the panel is open: MenuBarExtra windows
+        // resize unreliably mid-interaction (observed as broken layout after
+        // completing a task). Recomputed next time the panel opens.
+        .frame(width: embedded ? nil : 400, height: embedded ? nil : (latchedHeight ?? popupHeight))
+        .onAppear {
+            guard !embedded else { return }
+            latchedHeight = popupHeight
+            // Freeze immediately; the clock loop releases it within a second
+            // of close (onDisappear is unreliable for MenuBarExtra).
+            store.setStatusFrozen(true)
+        }
+        .onDisappear {
+            if !embedded { latchedHeight = nil }
+        }
         .frame(maxWidth: embedded ? .infinity : nil, maxHeight: embedded ? .infinity : nil, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("menu-panel")

@@ -65,11 +65,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler {
             Task { @MainActor in
+                let store = TaskStore.shared
                 let panelOpen = NSApp.windows.contains {
                     $0.isVisible && String(describing: type(of: $0)).contains("MenuBarExtra")
                 }
+                // Freeze is set by the panel's onAppear; the clock releases
+                // it after close since onDisappear is unreliable here.
+                if !panelOpen && store.isStatusFrozen {
+                    store.setStatusFrozen(false)
+                }
                 if !panelOpen {
-                    TaskStore.shared.tick()
+                    store.tick()
                 }
             }
         }
