@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CONFIG="${1:-debug}"
+swift build -c "$CONFIG"
+BIN=".build/${CONFIG}/ITimer"
+APP="dist/iTimer.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN" "$APP/Contents/MacOS/ITimer"
+cp Support/Info.plist "$APP/Contents/Info.plist"
+[ -f Support/iTimer.icns ] && cp Support/iTimer.icns "$APP/Contents/Resources/iTimer.icns"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+codesign --force --sign - "$APP"
+echo "built $APP"
