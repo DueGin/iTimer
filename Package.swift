@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "ITimer",
+    name: "iTimer",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "ITimer", targets: ["ITimer"])
+        .executable(name: "iTimer", targets: ["iTimer"])
     ],
     targets: [
         .target(name: "ITimerCore"),
         .executableTarget(
-            name: "ITimer",
+            name: "iTimer",
             dependencies: ["ITimerCore"],
             path: "Sources/ITimer"
         ),

@@ -5,7 +5,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh-Hans</string>
     <key>CFBundleExecutable</key>
-    <string>ITimer</string>
+    <string>iTimer</string>
     <key>CFBundleIdentifier</key>
     <string>app.duegin.itimer</string>
     <key>CFBundleInfoDictionaryVersion</key>
