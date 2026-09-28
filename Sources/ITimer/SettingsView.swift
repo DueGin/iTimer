@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage(Preferences.longRunNudge) private var longRunNudge = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
+    @State private var newCategory = ""
 
     var body: some View {
         Form {
@@ -37,6 +38,29 @@ struct SettingsView: View {
                 Text("注意力")
             } footer: {
                 Text("同时计时的任务达到这个数就算脑裂。大多数人超过 2 个就开始丢东西。")
+            }
+
+            Section {
+                ForEach(Array(store.categories.enumerated()), id: \.element.id) { index, category in
+                    CategoryRow(
+                        category: category,
+                        isFirst: index == 0,
+                        isLast: index == store.categories.count - 1,
+                        store: store
+                    )
+                }
+                HStack {
+                    TextField("新分类", text: $newCategory)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addCategory)
+                        .accessibilityIdentifier("settings-new-category")
+                    Button("添加", action: addCategory)
+                        .disabled(TaskCategory.clean(newCategory).isEmpty)
+                }
+            } header: {
+                Text("分类")
+            } footer: {
+                Text("每个任务可归入一个分类，另可加多个标签。在输入框里用 @分类 #标签，或右键任务修改。删除分类后，其中的任务变为未分类。")
             }
 
             Section("提醒") {
@@ -77,6 +101,10 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func addCategory() {
+        if store.addCategory(newCategory) != nil { newCategory = "" }
     }
 
     private var thresholdBinding: Binding<Int> {
@@ -122,5 +150,73 @@ struct SettingsView: View {
                 launchAtLogin = SMAppService.mainApp.status == .enabled
             }
         )
+    }
+}
+
+private struct CategoryRow: View {
+    var category: TaskCategory
+    var isFirst: Bool
+    var isLast: Bool
+    var store: TaskStore
+    @State private var name = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(0..<TaskStore.categoryColorCount, id: \.self) { index in
+                    Button {
+                        store.setCategoryColor(category.name, color: index)
+                    } label: {
+                        Label {
+                            Text(index == category.color ? "当前颜色" : "颜色 \(index + 1)")
+                        } icon: {
+                            Image(nsImage: Self.swatch(Theme.categoryColor(index: index)))
+                        }
+                    }
+                }
+            } label: {
+                Circle().fill(Theme.categoryColor(index: category.color)).frame(width: 12, height: 12)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("换颜色")
+            TextField("名称", text: $name)
+                .textFieldStyle(.plain)
+                .onSubmit(commit)
+            let count = store.tasks.filter { $0.category == category.name }.count
+            if count > 0 {
+                Text("\(count) 个任务")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button { store.moveCategory(category.name, by: -1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless)
+                .disabled(isFirst)
+                .help("上移")
+            Button { store.moveCategory(category.name, by: 1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.borderless)
+                .disabled(isLast)
+                .help("下移")
+            Button(role: .destructive) { store.removeCategory(category.name) } label: { Image(systemName: "trash") }
+                .buttonStyle(.borderless)
+                .help("删除分类，其中的任务变为未分类")
+        }
+        .onAppear { name = category.name }
+        .onChange(of: category.name) { _, new in name = new }
+    }
+
+    private func commit() {
+        if !store.renameCategory(category.name, to: name) { name = category.name }
+    }
+
+    /// Menu items only render images, not shapes.
+    private static func swatch(_ color: Color) -> NSImage {
+        let image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+            NSColor(color).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        return image
     }
 }

@@ -36,7 +36,8 @@ final class EventKitSync: TaskCalendarSyncing {
             event = EKEvent(eventStore: eventStore)
             event.calendar = target
         }
-        let tagLine = task.tags.isEmpty ? "" : "#" + task.tags.joined(separator: " #") + "\n"
+        let labels = (task.category.map { ["@\($0)"] } ?? []) + task.tags.map { "#\($0)" }
+        let tagLine = labels.isEmpty ? "" : labels.joined(separator: " ") + "\n"
         let planLine = task.plannedDuration.map { "预计 \(DurationFormat.prose($0))\n" } ?? ""
         let notes = tagLine + planLine + "iTimer"
         // The running refresh re-pushes every range each minute; skip the

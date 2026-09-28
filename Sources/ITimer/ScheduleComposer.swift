@@ -13,9 +13,19 @@ struct ScheduleDraft: Equatable {
     var hasTime = true
     var duration: TimeInterval? = ScheduleOptions.defaultDuration
     var reminderLead: TimeInterval? = ScheduleOptions.defaultReminderLead
+    var tags: [String] = []
+    var category: String?
 
+    /// `title` may carry `#标签 @分类` from the quick field; they move into
+    /// the pickers.
     static func new(title: String = "", asOf now: Date) -> ScheduleDraft {
-        ScheduleDraft(title: title, start: ScheduleOptions.suggestedStart(after: now))
+        let parsed = TitleParser.parse(title)
+        return ScheduleDraft(
+            title: parsed.title,
+            start: ScheduleOptions.suggestedStart(after: now),
+            tags: parsed.tags,
+            category: parsed.category
+        )
     }
 
     static func editing(_ task: TaskItem, asOf now: Date) -> ScheduleDraft {
@@ -26,12 +36,25 @@ struct ScheduleDraft: Equatable {
             start: task.scheduledStart ?? (task.isPending ? ScheduleOptions.suggestedStart(after: now) : now),
             hasTime: !task.isUndated,
             duration: task.plannedDuration,
-            reminderLead: task.reminderLead ?? (task.isUndated ? ScheduleOptions.defaultReminderLead : nil)
+            reminderLead: task.reminderLead ?? (task.isUndated ? ScheduleOptions.defaultReminderLead : nil),
+            tags: task.tags,
+            category: task.category
         )
     }
 
     /// What to store: nil while the time is still to be decided.
     var scheduledStart: Date? { hasTime ? start : nil }
+
+    /// Title, tags and category with anything typed as `#`/`@` in the
+    /// title folded in.
+    var resolved: ParsedTitle {
+        let parsed = TitleParser.parse(title.trimmingCharacters(in: .whitespacesAndNewlines))
+        return ParsedTitle(
+            title: parsed.title,
+            tags: TitleParser.merge(tags, parsed.tags),
+            category: parsed.category ?? category
+        )
+    }
 
     var titleValid: Bool {
         !TitleParser.parse(title.trimmingCharacters(in: .whitespacesAndNewlines)).title.isEmpty
@@ -47,6 +70,8 @@ struct ScheduleComposer: View {
     var onSave: () -> Void
     var onStartNow: () -> Void
     var onCancel: () -> Void
+    var categories: [TaskCategory] = TaskStore.shared.categories
+    var knownTags: [String] = TaskStore.shared.knownTags
     @FocusState private var titleFocused: Bool
     /// Inline day list. Not a Menu/Picker: those take focus and the
     /// MenuBarExtra panel closes under them.
@@ -88,7 +113,7 @@ struct ScheduleComposer: View {
     // MARK: title
 
     private var titleField: some View {
-        TextField("日程名称，结尾可加 #标签", text: $draft.title)
+        TextField("日程名称", text: $draft.title)
             .textFieldStyle(.plain)
             .font(.title3)
             .focused($titleFocused)
@@ -108,7 +133,7 @@ struct ScheduleComposer: View {
     private var form: some View {
         VStack(spacing: 0) {
             if draft.startEditable {
-                row("日期") { dayStepper }
+                row("日期") { dayRow }
                 if dayListOpen {
                     dayList
                 }
@@ -134,6 +159,14 @@ struct ScheduleComposer: View {
                     )
                     .accessibilityIdentifier("schedule-reminder")
                 }
+            }
+            divider
+            row("分类") {
+                CategoryPicker(selection: $draft.category, categories: categories)
+            }
+            divider
+            row("标签") {
+                TagEditor(tags: $draft.tags, known: knownTags)
             }
         }
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -161,83 +194,76 @@ struct ScheduleComposer: View {
         .frame(minHeight: 38)
     }
 
-    private var dayStepper: some View {
-        HStack(spacing: 4) {
-            StepButton(systemImage: "chevron.left", help: "前一天") { shiftDay(-1) }
-                .disabled(!draft.hasTime || calendar.isDate(draft.start, inSameDayAs: now) || draft.start < now)
+    /// Shortcuts laid out inline; the last button opens a month calendar
+    /// for any other day and shows that day once picked.
+    private var dayRow: some View {
+        let today = calendar.startOfDay(for: now)
+        let items = shortcuts(today: today)
+        let custom = draft.hasTime && !items.contains { calendar.isDate(draft.start, inSameDayAs: $0.day) }
+        return HStack(spacing: 4) {
+            shortcut("待定", selected: !draft.hasTime) { pickUndated() }
+                .help("先记下，不定日期和时间")
+                .accessibilityIdentifier("schedule-day-undated")
+            ForEach(items, id: \.title) { item in
+                shortcut(item.title, selected: draft.hasTime && calendar.isDate(draft.start, inSameDayAs: item.day)) {
+                    pick(item.day)
+                }
+                .help(item.day.formatted(.dateTime.month(.defaultDigits).day().weekday(.abbreviated)))
+            }
             Button {
                 shownMonth = nil
                 withAnimation(.easeOut(duration: 0.15)) { dayListOpen.toggle() }
             } label: {
-                HStack(spacing: 5) {
-                    if draft.hasTime {
-                        Text(draft.start, format: .dateTime.month(.defaultDigits).day().weekday(.abbreviated))
+                HStack(spacing: 3) {
+                    if custom {
+                        Text(customDayLabel)
                             .monospacedDigit()
-                        if let relative = relativeDay {
-                            badge(relative)
-                        }
                     } else {
-                        Text("时间待定")
-                        badge("先记下")
+                        Image(systemName: "calendar")
                     }
-                    Spacer(minLength: 2)
                     Image(systemName: "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 7, weight: .bold))
                         .rotationEffect(.degrees(dayListOpen ? 180 : 0))
                 }
-                .font(.callout)
-                .padding(.horizontal, 7)
-                .frame(minWidth: 128, minHeight: 22)
-                .background(Color.primary.opacity(dayListOpen ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .font(.caption.weight(custom ? .semibold : .medium))
+                .foregroundStyle(custom ? Theme.focused : Color.primary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    custom ? Theme.focused.opacity(0.14) : Color.primary.opacity(dayListOpen ? 0.1 : 0.05),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .fixedSize()
-            .help("选择日期，或先不定时间")
+            .help("选择其他日期")
             .accessibilityIdentifier("schedule-day-menu")
-            StepButton(systemImage: "chevron.right", help: "后一天") { shiftDay(1) }
         }
         .accessibilityIdentifier("schedule-day")
     }
 
-    private func badge(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(Theme.focused)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Theme.focused.opacity(0.12), in: Capsule())
+    /// "10/8", or "2027/1/5" outside this year.
+    private var customDayLabel: String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: draft.start)
+        let short = "\(parts.month ?? 0)/\(parts.day ?? 0)"
+        return calendar.isDate(draft.start, equalTo: now, toGranularity: .year) ? short : "\(parts.year ?? 0)/" + short
     }
 
-    /// Dropdown body: 待定 and a few shortcuts, then a month calendar that
-    /// pages to any future date.
+    /// Dropdown body: a month calendar that pages to any future date.
     private var dayList: some View {
         let today = calendar.startOfDay(for: now)
         let month = shownMonth ?? Self.monthStart(draft.hasTime ? draft.start : now, calendar: calendar)
-        return VStack(spacing: 8) {
-            HStack(spacing: 4) {
-                shortcut("待定", selected: !draft.hasTime) { pickUndated() }
-                    .help("先记下，不定日期和时间")
-                    .accessibilityIdentifier("schedule-day-undated")
-                ForEach(shortcuts(today: today), id: \.title) { item in
-                    shortcut(item.title, selected: draft.hasTime && calendar.isDate(draft.start, inSameDayAs: item.day)) {
-                        pick(item.day)
-                    }
-                    .help(item.day.formatted(.dateTime.month(.defaultDigits).day().weekday(.abbreviated)))
-                }
-            }
-            MonthGrid(
-                month: month,
-                today: today,
-                selection: draft.hasTime ? draft.start : nil,
-                calendar: calendar,
-                onPage: { offset in
-                    shownMonth = calendar.date(byAdding: .month, value: offset, to: month).map { Self.monthStart($0, calendar: calendar) }
-                },
-                onPick: pick
-            )
-        }
+        return MonthGrid(
+            month: month,
+            today: today,
+            selection: draft.hasTime ? draft.start : nil,
+            calendar: calendar,
+            onPage: { offset in
+                shownMonth = calendar.date(byAdding: .month, value: offset, to: month).map { Self.monthStart($0, calendar: calendar) }
+            },
+            onPick: pick
+        )
         .padding(.leading, 52)
         .padding(.trailing, 12)
         .padding(.bottom, 10)
@@ -266,6 +292,7 @@ struct ScheduleComposer: View {
             Text(title)
                 .font(.caption.weight(selected ? .semibold : .medium))
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .foregroundStyle(selected ? Theme.focused : Color.primary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
@@ -355,19 +382,6 @@ struct ScheduleComposer: View {
 
     // MARK: derived
 
-    private var relativeDay: String? {
-        let today = calendar.startOfDay(for: now)
-        let day = calendar.startOfDay(for: draft.start)
-        switch calendar.dateComponents([.day], from: today, to: day).day {
-        case 0: return "今天"
-        case 1: return "明天"
-        case 2: return "后天"
-        default:
-            // Far-off dates in another year need the year to be unambiguous.
-            return calendar.isDate(day, equalTo: today, toGranularity: .year) ? nil : "\(calendar.component(.year, from: day))年"
-        }
-    }
-
     private var summary: String {
         var parts: [String] = []
         if draft.startEditable && !draft.hasTime {
@@ -394,14 +408,6 @@ struct ScheduleComposer: View {
             parts.append("不提醒")
         }
         return parts.joined(separator: " · ")
-    }
-
-    private func shiftDay(_ days: Int) {
-        guard draft.hasTime else {
-            pick(calendar.startOfDay(for: now))
-            return
-        }
-        draft.start = calendar.date(byAdding: .day, value: days, to: draft.start) ?? draft.start
     }
 
     /// Move to `day`, keeping the picked time of day; a slot already past

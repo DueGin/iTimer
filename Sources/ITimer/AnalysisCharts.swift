@@ -141,7 +141,7 @@ private struct ActiveTaskList: View {
     var body: some View {
         ForEach(spans.prefix(5)) { span in
             HStack(spacing: 6) {
-                Circle().fill(Theme.lane(tags: span.tags)).frame(width: 6, height: 6)
+                Circle().fill(Theme.lane(span)).frame(width: 6, height: 6)
                 Text(span.title).lineLimit(1)
             }
         }
@@ -188,7 +188,7 @@ struct LaneChartCard: View {
                         y: .value("任务", span.title),
                         height: .fixed(14)
                     )
-                    .foregroundStyle(Theme.lane(tags: span.tags).opacity(opacity(span, active: active)))
+                    .foregroundStyle(Theme.lane(span).opacity(opacity(span, active: active)))
                     .cornerRadius(4)
                 }
                 if let hover {
@@ -562,14 +562,31 @@ struct LevelChartCard: View {
 
 // MARK: - Tags
 
+/// Donut of time per category or per tag.
 struct TagChartCard: View {
+    enum Kind {
+        case category
+        case tag
+
+        var title: String { self == .category ? "按分类" : "按标签" }
+        var placeholder: String { self == .category ? CategoryStats.uncategorized : TagStats.untagged }
+    }
+
     var slices: [TagSlice]
+    var kind: Kind = .tag
     @State private var hover: String?
 
+    private func color(_ key: String) -> Color {
+        kind == .category ? Theme.category(key == CategoryStats.uncategorized ? nil : key) : Theme.tag(key)
+    }
+
     var body: some View {
-        if slices.contains(where: { $0.tag != TagStats.untagged }) {
+        if slices.contains(where: { $0.tag != kind.placeholder }) {
             let total = slices.reduce(0) { $0 + $1.duration }
-            ChartCard(title: "按标签", caption: "计时花在哪些类别上。悬停图例高亮对应扇区。") {
+            ChartCard(
+                title: kind.title,
+                caption: kind == .category ? "每个任务只算进一个分类。悬停图例高亮对应扇区。" : "一个任务有多个标签时，每个标签都计全额。"
+            ) {
                 HStack(spacing: 16) {
                     ZStack {
                         Chart(slices.prefix(8)) { slice in
@@ -578,7 +595,7 @@ struct TagChartCard: View {
                                 innerRadius: .ratio(hover == slice.tag ? 0.56 : 0.62),
                                 angularInset: 1.5
                             )
-                            .foregroundStyle(Theme.tag(slice.tag))
+                            .foregroundStyle(color(slice.tag))
                             .opacity(hover == nil || hover == slice.tag ? 1 : 0.3)
                             .cornerRadius(3)
                         }
@@ -597,12 +614,12 @@ struct TagChartCard: View {
                         }
                     }
                     .frame(width: 130, height: 130)
-                    .accessibilityIdentifier("tag-chart")
+                    .accessibilityIdentifier(kind == .category ? "category-chart" : "tag-chart")
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(slices.prefix(6)) { slice in
                             HStack(spacing: 6) {
                                 Circle()
-                                    .fill(Theme.tag(slice.tag))
+                                    .fill(color(slice.tag))
                                     .frame(width: 7, height: 7)
                                 Text(slice.tag)
                                     .lineLimit(1)
@@ -616,7 +633,7 @@ struct TagChartCard: View {
                             .padding(.vertical, 3)
                             .background(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Theme.tag(slice.tag).opacity(hover == slice.tag ? 0.12 : 0))
+                                    .fill(color(slice.tag).opacity(hover == slice.tag ? 0.12 : 0))
                             )
                             .contentShape(Rectangle())
                             .onHover { inside in
@@ -629,11 +646,14 @@ struct TagChartCard: View {
                 }
             }
         } else {
-            ChartCard(title: "按标签", caption: "给任务加上 #标签，就能看到时间花在哪类事上。") {
+            ChartCard(
+                title: kind.title,
+                caption: kind == .category ? "给任务选个分类，就能看到时间花在哪类事上。" : "给任务加上 #标签，按更细的维度看时间。"
+            ) {
                 HStack(spacing: 8) {
-                    Image(systemName: "number")
+                    Image(systemName: kind == .category ? "folder" : "number")
                         .foregroundStyle(.tertiary)
-                    Text("例如「写周报 #工作」「跑步 #生活」")
+                    Text(kind == .category ? "例如「写周报 @工作」「跑步 @健康」" : "例如「写周报 #汇报」「跑步 #晨练」")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

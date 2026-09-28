@@ -75,6 +75,76 @@ enum Theme {
     static func lane(tags: [String]) -> Color {
         tags.first.map(tag) ?? focused
     }
+
+    /// Category colors a user can pick from; orange and pink stay reserved.
+    static let categoryPalette: [Color] = [.blue, .green, .purple, .teal, .brown, .mint, .cyan, .indigo]
+
+    static func categoryColor(index: Int) -> Color {
+        categoryPalette[((index % categoryPalette.count) + categoryPalette.count) % categoryPalette.count]
+    }
+
+    /// Color of a category by name, from the shared store; gray for 未分类
+    /// or a name no longer in the list.
+    @MainActor
+    static func category(_ name: String?) -> Color {
+        TaskStore.shared.category(named: name).map { categoryColor(index: $0.color) } ?? .gray
+    }
+
+    /// Lanes follow the category when there is one, else the first tag.
+    @MainActor
+    static func lane(_ span: LaneSpan) -> Color {
+        span.category != nil ? category(span.category) : lane(tags: span.tags)
+    }
+}
+
+/// Lays chips out left to right, wrapping to new lines as needed.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * lineSpacing
+        return CGSize(width: proposal.width ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in row.items {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + lineSpacing
+        }
+    }
+
+    private struct Row {
+        var items: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let needed = current.items.isEmpty ? size.width : current.width + spacing + size.width
+            if needed > width, !current.items.isEmpty {
+                rows.append(current)
+                current = Row()
+            }
+            current.width = current.items.isEmpty ? size.width : current.width + spacing + size.width
+            current.height = max(current.height, size.height)
+            current.items.append(index)
+        }
+        if !current.items.isEmpty { rows.append(current) }
+        return rows
+    }
 }
 
 struct CardSurface: ViewModifier {

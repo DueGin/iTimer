@@ -52,6 +52,7 @@ public struct AnalysisDigest: Equatable, Sendable {
     public var days: [DayLoad]
     public var dayScores: [DayScore]
     public var tags: [TagSlice]
+    public var categories: [TagSlice]
 
     /// Days in the trend chart, newest last. Older history is left out.
     public static let trendDays = 90
@@ -102,7 +103,8 @@ public struct AnalysisDigest: Equatable, Sendable {
             splitIntervals: ChartSeries.splitIntervals(of: report.slices, threshold: report.threshold),
             days: ChartSeries.days(of: report.slices, window: window, threshold: report.threshold, calendar: calendar),
             dayScores: range == .today ? [] : dayScores(tasks: tasks, window: window, threshold: threshold, now: now, calendar: calendar),
-            tags: TagStats.slices(tasks: tasks, window: window, now: now)
+            tags: TagStats.slices(tasks: tasks, window: window, now: now),
+            categories: CategoryStats.slices(tasks: tasks, window: window, now: now)
         )
     }
 
@@ -132,7 +134,7 @@ public struct AnalysisDigest: Equatable, Sendable {
     }
 }
 
-/// Memoizes digests per range on (tasks, threshold, 30s bucket).
+/// Memoizes digests per range on (tasks, threshold, filter, 30s bucket).
 @MainActor
 public final class DigestCache {
     public static let shared = DigestCache()
@@ -140,6 +142,7 @@ public final class DigestCache {
     private struct Key: Equatable {
         var tasks: [TaskItem]
         var threshold: Int
+        var category: String?
         var bucket: Int
     }
 
@@ -148,15 +151,24 @@ public final class DigestCache {
 
     public init() {}
 
-    public func digest(store: TaskStore, range: AnalysisRange, calendar: Calendar = .current) -> AnalysisDigest {
+    /// `category` narrows everything to one category (a name, or
+    /// `CategoryStats.uncategorized`); nil = all tasks.
+    public func digest(
+        store: TaskStore,
+        range: AnalysisRange,
+        category: String? = nil,
+        calendar: Calendar = .current
+    ) -> AnalysisDigest {
         let key = Key(
             tasks: store.tasks,
             threshold: store.brainSplitThreshold,
+            category: category,
             bucket: Int(store.now.timeIntervalSince1970 / 30)
         )
         if let entry = entries[range], entry.key == key { return entry.value }
+        let tasks = category.map { name in store.tasks.filter { CategoryStats.key($0) == name } } ?? store.tasks
         let fresh = AnalysisDigest.build(
-            tasks: store.tasks,
+            tasks: tasks,
             range: range,
             threshold: store.brainSplitThreshold,
             now: store.now,
