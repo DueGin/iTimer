@@ -68,9 +68,10 @@ enum SelfTest {
         let baseFile = max(0, fileTaskCount())
         // Backdated starts so "today" charts have visible bars; without this
         // the whole run fits inside one second and the report is empty.
+        let labels = ["@工作 #方案", "@生活", "@工作 #bug"]
         for (index, title) in ["写方案", "回消息", "改bug"].enumerated() {
             let at = Date().addingTimeInterval(-2 * 3600 - Double(2 - index) * 600)
-            NotificationCenter.default.post(name: .iTimerStartTask, object: nil, userInfo: ["title": title, "at": at])
+            NotificationCenter.default.post(name: .iTimerStartTask, object: nil, userInfo: ["title": "\(title) \(labels[index])", "at": at])
             guard await wait(for: 2, label: "task \(title)", until: {
                 TaskStore.shared.runningTasks.contains { $0.title == title }
             }) else {
@@ -248,8 +249,8 @@ enum SelfTest {
         let store = TaskStore.shared
         let now = Date()
         for task in store.runningTasks { store.complete(id: task.id, at: now) }
-        guard let due = store.addSchedule(title: "周会 #会议", start: now.addingTimeInterval(-600), plannedDuration: 3600, reminderLead: 0),
-              store.addSchedule(title: "写周报 #工作", start: now.addingTimeInterval(7200), plannedDuration: 7200, reminderLead: 600) != nil,
+        guard let due = store.addSchedule(title: "周会 @工作 #会议", start: now.addingTimeInterval(-600), plannedDuration: 3600, reminderLead: 0),
+              store.addSchedule(title: "写周报 @工作 #汇报", start: now.addingTimeInterval(7200), plannedDuration: 7200, reminderLead: 600) != nil,
               let review = store.addSchedule(title: "代码评审", start: now.addingTimeInterval(-3 * 3600), plannedDuration: 3600, reminderLead: nil) else {
             note("addSchedule failed")
             return false
@@ -274,7 +275,7 @@ enum SelfTest {
         }
         note("undated schedule waits in 时间待定 without reminder")
         render(MenuBarView(store: store), size: NSSize(width: 380, height: 640), to: "/tmp/itimer-schedule-popup.png")
-        var draft = ScheduleDraft.new(title: "准备季度汇报 #工作", asOf: now)
+        var draft = ScheduleDraft.new(title: "准备季度汇报 @工作 #汇报 #PPT", asOf: now)
         render(
             ScheduleComposer(
                 draft: Binding(get: { draft }, set: { draft = $0 }),
@@ -282,7 +283,7 @@ enum SelfTest {
                 onSave: {}, onStartNow: {}, onCancel: {}
             )
             .padding(16),
-            size: NSSize(width: 380, height: 420),
+            size: NSSize(width: 380, height: 520),
             to: "/tmp/itimer-composer.png"
         )
         render(
@@ -293,7 +294,7 @@ enum SelfTest {
                 dayListOpen: true
             )
             .padding(16),
-            size: NSSize(width: 380, height: 560),
+            size: NSSize(width: 380, height: 720),
             to: "/tmp/itimer-composer-days.png"
         )
         var far = ScheduleDraft.new(title: "续签合同", asOf: now)
@@ -306,7 +307,7 @@ enum SelfTest {
                 dayListOpen: true
             )
             .padding(16),
-            size: NSSize(width: 380, height: 560),
+            size: NSSize(width: 380, height: 720),
             to: "/tmp/itimer-composer-far.png"
         )
         var pending = ScheduleDraft.new(title: "接入 AI #想法", asOf: now)
@@ -318,7 +319,7 @@ enum SelfTest {
                 onSave: {}, onStartNow: {}, onCancel: {}
             )
             .padding(16),
-            size: NSSize(width: 380, height: 340),
+            size: NSSize(width: 380, height: 460),
             to: "/tmp/itimer-composer-undated.png"
         )
         return true

@@ -371,7 +371,7 @@ struct MenuBarView: View {
         let upcoming = pending.filter { !$0.isDue(asOf: now) && !$0.isUndated }.sorted { ($0.scheduledStart ?? $0.createdAt) < ($1.scheduledStart ?? $1.createdAt) }
         let undated = store.undatedSchedules
         if store.runningTasks.isEmpty && store.pausedTasks.isEmpty && pending.isEmpty && done.isEmpty {
-            Text("没有人生的计时是白费的——输入任务回车立即计时，或点「日程」安排未来的事。结尾加个 #标签，统计会帮你归类。")
+            Text("没有人生的计时是白费的——输入任务回车立即计时，或点「日程」安排未来的事。加个 @分类 或 #标签，统计会帮你归类。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -492,15 +492,64 @@ struct MenuBarView: View {
     private var placeholder: String {
         let running = store.runningCount
         let threshold = store.brainSplitThreshold
-        if running == 0 { return "现在专注做什么？结尾可加 #标签" }
+        if running == 0 { return "现在专注做什么？可加 @分类 #标签" }
         if running >= threshold { return "已经脑裂了，真的还要再开一个？" }
         if running + 1 == threshold { return "再开一个就到脑裂线了…" }
         return "再开一个线程？"
     }
 
+    /// While the last word is `@…` or `#…`, the row offers matching
+    /// categories or tags instead of recent tasks.
+    private var completions: (prefix: String, options: [String])? {
+        guard let last = draft.split(separator: " ", omittingEmptySubsequences: false).last,
+              let marker = last.first, marker == "@" || marker == "#" else { return nil }
+        let typed = last.dropFirst().lowercased()
+        let pool = marker == "@" ? store.categories.map(\.name) : store.knownTags
+        let options = pool.filter { typed.isEmpty || ($0.lowercased().hasPrefix(typed) && $0.lowercased() != typed) }
+        return (String(marker), Array(options.prefix(8)))
+    }
+
+    private func complete(_ marker: String, _ option: String) {
+        var words = draft.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        words.removeLast()
+        draft = (words + [marker + option]).joined(separator: " ") + " "
+        draftFocused = true
+    }
+
     @ViewBuilder
     private var suggestionRow: some View {
-        if !store.suggestions(limit: 1).isEmpty {
+        if let completions, !completions.options.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: completions.prefix == "@" ? "folder" : "number")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(completions.options, id: \.self) { option in
+                            let color = completions.prefix == "@" ? Theme.category(option) : Theme.tag(option)
+                            Button { complete(completions.prefix, option) } label: {
+                                Text(completions.prefix + option)
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(HoverButtonStyle(
+                                shape: .capsule,
+                                tint: color,
+                                rest: 0.1,
+                                hover: 0.22,
+                                restForeground: color,
+                                hoverForeground: color,
+                                padding: EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8)
+                            ))
+                        }
+                    }
+                }
+                .scrollIndicators(.never)
+                .mask(EdgeFade(edge: .trailing))
+            }
+            .frame(height: 22)
+            .accessibilityIdentifier("label-completions")
+        } else if !store.suggestions(limit: 1).isEmpty {
             let matches = store.suggestions(matching: draft, limit: 6)
             HStack(spacing: 6) {
                 Image(systemName: "arrow.counterclockwise")
@@ -603,14 +652,19 @@ struct MenuBarView: View {
 
     private func saveComposer() {
         guard let value = composer, value.titleValid else { return }
+        let labels = value.resolved
         if let id = value.editingID {
-            if store.tasks.first(where: { $0.id == id })?.title != value.title {
-                store.rename(id: id, title: value.title)
+            if store.tasks.first(where: { $0.id == id })?.title != labels.title {
+                store.rename(id: id, title: labels.title)
             }
+            store.setTags(id: id, labels.tags)
+            store.setCategory(id: id, labels.category)
             store.updateSchedule(id: id, start: value.scheduledStart, plannedDuration: value.duration, reminderLead: value.reminderLead)
         } else {
             guard store.addSchedule(
                 title: value.title,
+                tags: value.tags,
+                category: value.category,
                 start: value.scheduledStart,
                 plannedDuration: value.duration,
                 reminderLead: value.reminderLead
@@ -624,6 +678,8 @@ struct MenuBarView: View {
         guard let value = composer,
               let task = store.addSchedule(
                   title: value.title,
+                  tags: value.tags,
+                  category: value.category,
                   start: store.now,
                   plannedDuration: value.duration,
                   reminderLead: value.reminderLead
@@ -667,7 +723,7 @@ struct TaskRow: View {
             primaryButton
             VStack(alignment: .leading, spacing: 3) {
                 if editing {
-                    TextField("任务名", text: $renameDraft)
+                    TextField("任务名 @分类 #标签", text: $renameDraft)
                         .textFieldStyle(.plain)
                         .onSubmit(commitRename)
                         .onExitCommand { editingID = nil }
@@ -679,6 +735,9 @@ struct TaskRow: View {
                         .onTapGesture(count: 2, perform: beginRename)
                 }
                 HStack(spacing: 5) {
+                    if let category = task.category {
+                        CategoryPill(name: category)
+                    }
                     ForEach(task.tags, id: \.self) { tag in
                         TagPill(tag: tag)
                     }
@@ -848,7 +907,7 @@ struct TaskRow: View {
                 }
             } else {
                 IconButton(
-                    title: task.isUndated ? "编辑：定个时间、预计时长" : task.isPending ? "编辑：名称、时间、预计时长、提醒" : "编辑：名称、预计时长、提醒",
+                    title: task.isUndated ? "编辑：定个时间、预计时长、分类" : task.isPending ? "编辑：名称、时间、预计时长、提醒、分类" : "编辑：名称、预计时长、提醒、分类",
                     systemImage: "slider.horizontal.3",
                     identifier: "edit-schedule-\(task.id.uuidString)",
                     action: onEdit
@@ -888,18 +947,28 @@ struct TaskRow: View {
             Button("完成") { store.complete(id: task.id) }
         }
         Divider()
+        LabelMenus(task: task, store: store, onEditLabels: beginLabelEdit)
+        Divider()
         Button(task.isPending ? "编辑日程…" : "编辑预计与提醒…", action: onEdit)
         Button("改名", action: beginRename)
         Button("删除", role: .destructive) { store.delete(id: task.id) }
     }
 
+    /// The inline field edits title, category and tags together, in the
+    /// same "写周报 @工作 #汇报" form as the quick field.
     private func beginRename() {
         editingID = task.id
-        renameDraft = task.title
+        renameDraft = TaskStore.input(for: task)
+    }
+
+    /// Same field, cursor ready for a new tag.
+    private func beginLabelEdit() {
+        editingID = task.id
+        renameDraft = TaskStore.input(for: task) + " #"
     }
 
     private func commitRename() {
-        if store.rename(id: task.id, title: renameDraft) {
+        if store.retitle(id: task.id, input: renameDraft) {
             editingID = nil
         }
     }
@@ -949,6 +1018,12 @@ struct DoneRow: View {
                 .font(.callout)
                 .foregroundStyle(.primary.opacity(0.7))
                 .lineLimit(1)
+            if let category = task.category {
+                Circle()
+                    .fill(Theme.category(category))
+                    .frame(width: 6, height: 6)
+                    .help(category)
+            }
             Spacer(minLength: 6)
             Text(DurationFormat.prose(task.duration(asOf: store.now)))
                 .font(.callout.weight(.medium).monospacedDigit())
@@ -970,6 +1045,9 @@ struct DoneRow: View {
         }
         .contextMenu {
             Button("再来一段") { store.resume(id: task.id) }
+            Divider()
+            LabelMenus(task: task, store: store, onEditLabels: nil)
+            Divider()
             Button("删除", role: .destructive) { store.delete(id: task.id) }
         }
         .accessibilityIdentifier("done-row-\(task.id.uuidString)")
@@ -1023,18 +1101,5 @@ struct ChipLabelStyle: LabelStyle {
                 withAnimation(.easeOut(duration: 0.15)) { hovering = inside }
             }
         }
-    }
-}
-
-struct TagPill: View {
-    var tag: String
-
-    var body: some View {
-        Text(tag)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(Theme.tag(tag))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(Theme.tag(tag).opacity(0.14), in: Capsule())
     }
 }

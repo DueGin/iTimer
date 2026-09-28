@@ -889,3 +889,138 @@ final class ScheduleTests: XCTestCase {
         XCTAssertEqual(calendar.dateComponents([.hour, .minute], from: ScheduleOptions.suggestedStart(after: late, calendar: calendar)), DateComponents(hour: 15, minute: 15))
     }
 }
+
+@MainActor
+final class LabelTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    private var directories: [URL] = []
+
+    override func tearDown() {
+        directories.forEach { try? FileManager.default.removeItem(at: $0) }
+        directories = []
+        super.tearDown()
+    }
+
+    private func makeStore() -> TaskStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("itimer-labels-\(UUID().uuidString)", isDirectory: true)
+        directories.append(directory)
+        return TaskStore(url: directory.appendingPathComponent("state.json"), now: t0)
+    }
+
+    func testParserExtractsCategoryAndRoundTrips() {
+        let parsed = TitleParser.parse("写周报 @工作 #汇报 #周报")
+        XCTAssertEqual(parsed.title, "写周报")
+        XCTAssertEqual(parsed.tags, ["汇报", "周报"])
+        XCTAssertEqual(parsed.category, "工作")
+        XCTAssertEqual(TitleParser.input(title: parsed.title, tags: parsed.tags, category: parsed.category), "写周报 @工作 #汇报 #周报")
+        // a lone "@" stays in the title; the last category wins
+        XCTAssertEqual(TitleParser.parse("见 @ 老王").title, "见 @ 老王")
+        XCTAssertEqual(TitleParser.parse("a @学习 @生活").category, "生活")
+    }
+
+    func testStoreStartsWithDefaultCategoriesAndLegacyFilesGetThem() throws {
+        let store = makeStore()
+        XCTAssertEqual(store.categories.map(\.name), ["工作", "学习", "生活", "健康"])
+
+        let legacy = #"{"brainSplitThreshold":3,"tasks":[{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[]}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(StoreSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertEqual(snapshot.categories, TaskCategory.defaults)
+        XCTAssertNil(snapshot.tasks[0].category)
+    }
+
+    func testQuickInputAssignsCategoryCaseInsensitivelyAndCreatesNewOnes() {
+        let store = makeStore()
+        let known = store.addTask(title: "读论文 @学习 #AI", at: t0)!
+        XCTAssertEqual(known.category, "学习")
+        XCTAssertEqual(known.tags, ["AI"])
+        XCTAssertEqual(store.categories.count, 4)
+
+        let fresh = store.addTask(title: "练琴 @爱好", at: t0)!
+        XCTAssertEqual(fresh.category, "爱好")
+        XCTAssertEqual(store.categories.last?.name, "爱好")
+        // next unused palette slot
+        XCTAssertEqual(store.categories.last?.color, 4)
+
+        let again = store.addTask(title: "练琴2 @爱好", at: t0)!
+        XCTAssertEqual(again.category, "爱好")
+        XCTAssertEqual(store.categories.count, 5)
+        XCTAssertTrue(store.suggestions().contains { $0.contains("@") } == false, "open tasks are not suggested")
+        store.complete(id: known.id, at: t0.addingTimeInterval(60))
+        XCTAssertTrue(store.suggestions().contains("读论文 @学习 #AI"))
+    }
+
+    func testRetitleSetTagsAndSetCategory() {
+        let store = makeStore()
+        let task = store.addTask(title: "写周报", at: t0)!
+        XCTAssertTrue(store.retitle(id: task.id, input: "写月报 @工作 #汇报"))
+        var current = store.tasks.first { $0.id == task.id }!
+        XCTAssertEqual(current.title, "写月报")
+        XCTAssertEqual(current.category, "工作")
+        XCTAssertEqual(current.tags, ["汇报"])
+
+        store.toggleTag(id: task.id, "紧急")
+        store.toggleTag(id: task.id, "汇报")
+        store.setCategory(id: task.id, nil)
+        current = store.tasks.first { $0.id == task.id }!
+        XCTAssertEqual(current.tags, ["紧急"])
+        XCTAssertNil(current.category)
+        XCTAssertEqual(store.knownTags.first, "紧急")
+
+        XCTAssertFalse(store.retitle(id: task.id, input: "@工作 #只有标签"))
+    }
+
+    func testRenameAndRemoveCategoryUpdateTasks() {
+        let store = makeStore()
+        let task = store.addTask(title: "写代码 @工作", at: t0)!
+        XCTAssertTrue(store.renameCategory("工作", to: "上班"))
+        XCTAssertEqual(store.tasks.first { $0.id == task.id }?.category, "上班")
+        XCTAssertFalse(store.renameCategory("上班", to: "学习"), "names stay unique")
+        XCTAssertFalse(store.renameCategory("上班", to: CategoryStats.uncategorized))
+
+        store.removeCategory("上班")
+        XCTAssertNil(store.tasks.first { $0.id == task.id }?.category)
+        XCTAssertNil(store.category(named: "上班"))
+
+        // persisted
+        let reloaded = TaskStore(url: store.url, now: t0)
+        XCTAssertEqual(reloaded.categories.map(\.name), ["学习", "生活", "健康"])
+    }
+
+    func testScheduleMergesPickedLabelsWithTypedOnes() {
+        let store = makeStore()
+        let item = store.addSchedule(
+            title: "季度汇报 #PPT",
+            tags: ["汇报"],
+            category: "工作",
+            start: t0.addingTimeInterval(3600),
+            plannedDuration: 3600,
+            reminderLead: nil,
+            at: t0
+        )!
+        XCTAssertEqual(item.tags, ["汇报", "PPT"])
+        XCTAssertEqual(item.category, "工作")
+    }
+
+    func testCategoryStatsAndDigestFilter() {
+        let store = makeStore()
+        let work = store.addTask(title: "写方案 @工作", at: t0)!
+        let stray = store.addTask(title: "杂事", at: t0)!
+        store.pause(id: work.id, at: t0.addingTimeInterval(600))
+        store.pause(id: stray.id, at: t0.addingTimeInterval(300))
+
+        let window = DateInterval(start: t0, end: t0.addingTimeInterval(3600))
+        let slices = CategoryStats.slices(tasks: store.tasks, window: window, now: window.end)
+        XCTAssertEqual(slices.map(\.tag), ["工作", CategoryStats.uncategorized])
+        XCTAssertEqual(slices[0].duration, 600, accuracy: 0.001)
+
+        let cache = DigestCache()
+        let filtered = cache.digest(store: store, range: .all, category: "工作")
+        XCTAssertEqual(filtered.report.tasks.map(\.id), [work.id])
+        let loose = cache.digest(store: store, range: .all, category: CategoryStats.uncategorized)
+        XCTAssertEqual(loose.report.tasks.map(\.id), [stray.id])
+        XCTAssertEqual(cache.digest(store: store, range: .all).report.tasks.count, 2)
+    }
+}

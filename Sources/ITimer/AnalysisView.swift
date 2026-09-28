@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 struct AnalysisView: View {
     var store: TaskStore
     @State private var range: AnalysisRange
+    /// nil = every category; otherwise a name or `CategoryStats.uncategorized`.
+    @State private var category: String?
 
     init(store: TaskStore, range: AnalysisRange = .today) {
         self.store = store
@@ -13,7 +15,7 @@ struct AnalysisView: View {
     }
 
     var body: some View {
-        let digest = DigestCache.shared.digest(store: store, range: range)
+        let digest = DigestCache.shared.digest(store: store, range: range, category: category)
         let report = digest.report
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -41,7 +43,15 @@ struct AnalysisView: View {
                         LevelChartCard(shares: ChartSeries.shares(of: report.slices), threshold: report.threshold)
                     }
                     HStack(alignment: .top, spacing: 16) {
+                        if category == nil {
+                            TagChartCard(slices: digest.categories, kind: .category)
+                        }
                         TagChartCard(slices: digest.tags)
+                        if category != nil {
+                            OverlapCard(overlaps: report.overlaps)
+                        }
+                    }
+                    if category == nil {
                         OverlapCard(overlaps: report.overlaps)
                     }
                     RecordsCard(tasks: report.tasks, store: store)
@@ -65,6 +75,20 @@ struct AnalysisView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 260)
                 .accessibilityIdentifier("range-picker")
+            }
+            ToolbarItem(placement: .navigation) {
+                Picker("分类", selection: $category) {
+                    Text("全部分类").tag(String?.none)
+                    Divider()
+                    ForEach(store.categories) { item in
+                        Text(item.name).tag(Optional(item.name))
+                    }
+                    Text(CategoryStats.uncategorized).tag(Optional(CategoryStats.uncategorized))
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                .help("只看某个分类的计时")
+                .accessibilityIdentifier("category-filter")
             }
             ToolbarItem(placement: .primaryAction) {
                 ThresholdControl(value: thresholdBinding)
@@ -132,13 +156,14 @@ struct AnalysisView: View {
     private func exportCSV() {
         let window = range.window(asOf: store.now, tasks: store.tasks)
         let iso = ISO8601DateFormatter()
-        var lines = ["任务,标签,开始,结束,秒"]
-        for task in store.tasks {
+        var lines = ["任务,分类,标签,开始,结束,秒"]
+        for task in store.tasks where category.map({ CategoryStats.key(task) == $0 }) ?? true {
             for segment in task.segments {
                 guard let clipped = segment.clipped(to: window, asOf: store.now) else { continue }
                 let title = "\"" + task.title.replacingOccurrences(of: "\"", with: "\"\"") + "\""
                 let tags = "\"" + task.tags.joined(separator: " ") + "\""
-                lines.append("\(title),\(tags),\(iso.string(from: clipped.start)),\(iso.string(from: clipped.end)),\(Int(clipped.duration))")
+                let group = "\"" + (task.category ?? "") + "\""
+                lines.append("\(title),\(group),\(tags),\(iso.string(from: clipped.start)),\(iso.string(from: clipped.end)),\(Int(clipped.duration))")
             }
         }
         guard lines.count > 1 else { return }
@@ -404,9 +429,14 @@ private struct RecordRow: View {
     var body: some View {
         HStack(spacing: 10) {
             statusBadge
-            Text(task.title)
-                .lineLimit(1)
-                .frame(minWidth: 120, alignment: .leading)
+            HStack(spacing: 6) {
+                Text(task.title)
+                    .lineLimit(1)
+                if let category = store.tasks.first(where: { $0.id == task.id })?.category {
+                    CategoryPill(name: category)
+                }
+            }
+            .frame(minWidth: 120, alignment: .leading)
             GeometryReader { proxy in
                 Capsule()
                     .fill(task.isRunning ? Theme.focused : Color.primary.opacity(hovering ? 0.3 : 0.18))

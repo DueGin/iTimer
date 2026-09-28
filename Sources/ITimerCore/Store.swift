@@ -6,16 +6,24 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
     public var brainSplitThreshold: Int
     public var tasks: [TaskItem]
     public var calendarSyncEnabled: Bool
+    public var categories: [TaskCategory]
 
-    public init(version: Int = 1, brainSplitThreshold: Int, tasks: [TaskItem], calendarSyncEnabled: Bool = false) {
+    public init(
+        version: Int = 1,
+        brainSplitThreshold: Int,
+        tasks: [TaskItem],
+        calendarSyncEnabled: Bool = false,
+        categories: [TaskCategory] = TaskCategory.defaults
+    ) {
         self.version = version
         self.brainSplitThreshold = brainSplitThreshold
         self.tasks = tasks
         self.calendarSyncEnabled = calendarSyncEnabled
+        self.categories = categories
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, brainSplitThreshold, tasks, calendarSyncEnabled
+        case version, brainSplitThreshold, tasks, calendarSyncEnabled, categories
     }
 
     public init(from decoder: Decoder) throws {
@@ -24,6 +32,7 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
         brainSplitThreshold = try container.decode(Int.self, forKey: .brainSplitThreshold)
         tasks = try container.decode([TaskItem].self, forKey: .tasks)
         calendarSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .calendarSyncEnabled) ?? false
+        categories = try container.decodeIfPresent([TaskCategory].self, forKey: .categories) ?? TaskCategory.defaults
     }
 }
 
@@ -51,6 +60,8 @@ public final class TaskStore {
     public private(set) var tasks: [TaskItem]
     public private(set) var brainSplitThreshold: Int
     public private(set) var calendarSyncEnabled: Bool
+    /// User-managed categories, in display order.
+    public private(set) var categories: [TaskCategory]
     public private(set) var now: Date
     public private(set) var lastError: String?
     public let url: URL
@@ -72,6 +83,7 @@ public final class TaskStore {
         self.tasks = loaded.tasks
         self.brainSplitThreshold = loaded.brainSplitThreshold
         self.calendarSyncEnabled = loaded.calendarSyncEnabled
+        self.categories = loaded.categories
         self.lastError = loaded.error
     }
 
@@ -143,8 +155,26 @@ public final class TaskStore {
         return result
     }
 
-    private static func input(for task: TaskItem) -> String {
-        ([task.title] + task.tags.map { "#\($0)" }).joined(separator: " ")
+    /// What the quick field would need to recreate `task`: "写周报 @工作 #汇报".
+    public static func input(for task: TaskItem) -> String {
+        TitleParser.input(title: task.title, tags: task.tags, category: task.category)
+    }
+
+    /// Every tag in use, most recently used first.
+    public var knownTags: [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for task in tasks.sorted(by: { $0.createdAt > $1.createdAt }) {
+            for tag in task.tags where seen.insert(tag.lowercased()).inserted {
+                result.append(tag)
+            }
+        }
+        return result
+    }
+
+    public func category(named name: String?) -> TaskCategory? {
+        guard let name else { return nil }
+        return categories.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     public var longestRunningElapsed: TimeInterval {
@@ -250,7 +280,8 @@ public final class TaskStore {
             title: limited,
             createdAt: stamp,
             segments: [TimeSegment(startedAt: stamp)],
-            tags: parsed.tags
+            tags: parsed.tags,
+            category: resolveCategory(parsed.category)
         )
         tasks.insert(task, at: 0)
         self.now = stamp
@@ -262,9 +293,12 @@ public final class TaskStore {
     /// Add a schedule. It does not start timing — not even once its start
     /// time passes; the user starts it explicitly via `resume(id:)`.
     /// `start` nil = time to be decided; such a schedule has no reminder.
+    /// `tags` and `category` add to whatever `#`/`@` the title carries.
     @discardableResult
     public func addSchedule(
         title: String,
+        tags: [String] = [],
+        category: String? = nil,
         start: Date?,
         plannedDuration: TimeInterval?,
         reminderLead: TimeInterval?,
@@ -276,7 +310,8 @@ public final class TaskStore {
         let task = TaskItem(
             title: String(parsed.title.prefix(80)),
             createdAt: stamp,
-            tags: parsed.tags,
+            tags: TitleParser.merge(tags, parsed.tags),
+            category: resolveCategory(parsed.category ?? category),
             scheduledStart: start,
             plannedDuration: plannedDuration.map { max(60, $0) },
             reminderLead: start == nil ? nil : reminderLead.map { max(0, $0) }
@@ -385,6 +420,116 @@ public final class TaskStore {
         return true
     }
 
+    /// Replace title, tags and category from one quick-field style input
+    /// ("写周报 @工作 #汇报"). A bare title clears tags and category.
+    @discardableResult
+    public func retitle(id: UUID, input: String) -> Bool {
+        let parsed = TitleParser.parse(input.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !parsed.title.isEmpty, let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
+        tasks[index].title = String(parsed.title.prefix(80))
+        tasks[index].tags = parsed.tags
+        tasks[index].category = resolveCategory(parsed.category)
+        save()
+        syncTask(id: id)
+        return true
+    }
+
+    @discardableResult
+    public func setTags(id: UUID, _ tags: [String]) -> Bool {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
+        let cleaned = TitleParser.merge(tags.map(TaskCategory.clean).filter { !$0.isEmpty }, [])
+        guard cleaned != tasks[index].tags else { return true }
+        tasks[index].tags = cleaned
+        save()
+        syncTask(id: id)
+        return true
+    }
+
+    @discardableResult
+    public func toggleTag(id: UUID, _ tag: String) -> Bool {
+        guard let task = tasks.first(where: { $0.id == id }) else { return false }
+        let has = task.tags.contains { $0.caseInsensitiveCompare(tag) == .orderedSame }
+        return setTags(id: id, has ? task.tags.filter { $0.caseInsensitiveCompare(tag) != .orderedSame } : task.tags + [tag])
+    }
+
+    /// nil = 未分类. An unknown name creates the category.
+    @discardableResult
+    public func setCategory(id: UUID, _ name: String?) -> Bool {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
+        let resolved = resolveCategory(name)
+        guard resolved != tasks[index].category else { return true }
+        tasks[index].category = resolved
+        save()
+        syncTask(id: id)
+        return true
+    }
+
+    // MARK: - Categories
+
+    /// Adds a category (next palette color) and returns it; an existing
+    /// name returns the existing one.
+    @discardableResult
+    public func addCategory(_ name: String) -> TaskCategory? {
+        let cleaned = TaskCategory.clean(name)
+        guard !cleaned.isEmpty, cleaned != CategoryStats.uncategorized else { return nil }
+        if let existing = category(named: cleaned) { return existing }
+        let used = Set(categories.map(\.color))
+        let color = (0..<Self.categoryColorCount).first { !used.contains($0) } ?? categories.count % Self.categoryColorCount
+        let category = TaskCategory(name: cleaned, color: color)
+        categories.append(category)
+        save()
+        return category
+    }
+
+    /// Renames the category and every task filed under it.
+    @discardableResult
+    public func renameCategory(_ old: String, to new: String) -> Bool {
+        let cleaned = TaskCategory.clean(new)
+        guard !cleaned.isEmpty, cleaned != CategoryStats.uncategorized,
+              let index = categories.firstIndex(where: { $0.name == old }) else { return false }
+        if cleaned == old { return true }
+        guard category(named: cleaned) == nil || cleaned.caseInsensitiveCompare(old) == .orderedSame else { return false }
+        categories[index].name = cleaned
+        let affected = tasks.indices.filter { tasks[$0].category == old }
+        for task in affected { tasks[task].category = cleaned }
+        save()
+        affected.forEach { syncTask(id: tasks[$0].id) }
+        return true
+    }
+
+    /// Removes the category; its tasks become 未分类.
+    public func removeCategory(_ name: String) {
+        guard let index = categories.firstIndex(where: { $0.name == name }) else { return }
+        categories.remove(at: index)
+        let affected = tasks.indices.filter { tasks[$0].category == name }
+        for task in affected { tasks[task].category = nil }
+        save()
+        affected.forEach { syncTask(id: tasks[$0].id) }
+    }
+
+    public func setCategoryColor(_ name: String, color: Int) {
+        guard let index = categories.firstIndex(where: { $0.name == name }), categories[index].color != color else { return }
+        categories[index].color = color
+        save()
+    }
+
+    public func moveCategory(_ name: String, by offset: Int) {
+        guard let index = categories.firstIndex(where: { $0.name == name }) else { return }
+        let target = index + offset
+        guard categories.indices.contains(target) else { return }
+        categories.swapAt(index, target)
+        save()
+    }
+
+    /// Size of the app's category palette; colors cycle past it.
+    public static let categoryColorCount = 8
+
+    /// Canonical spelling of `name`, creating the category if it is new.
+    private func resolveCategory(_ name: String?) -> String? {
+        guard let name, !TaskCategory.clean(name).isEmpty else { return nil }
+        return addCategory(name)?.name
+    }
+
     @discardableResult
     public func delete(id: UUID) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
@@ -456,7 +601,8 @@ public final class TaskStore {
         let snapshot = StoreSnapshot(
             brainSplitThreshold: brainSplitThreshold,
             tasks: tasks,
-            calendarSyncEnabled: calendarSyncEnabled
+            calendarSyncEnabled: calendarSyncEnabled,
+            categories: categories
         )
         do {
             try Self.write(snapshot, to: url)
@@ -475,6 +621,7 @@ public final class TaskStore {
         var tasks: [TaskItem]
         var brainSplitThreshold: Int
         var calendarSyncEnabled: Bool
+        var categories: [TaskCategory] = TaskCategory.defaults
         var error: String?
     }
 
@@ -495,6 +642,7 @@ public final class TaskStore {
                 tasks: snapshot.tasks,
                 brainSplitThreshold: BrainSplitRules.clamp(snapshot.brainSplitThreshold),
                 calendarSyncEnabled: snapshot.calendarSyncEnabled,
+                categories: snapshot.categories,
                 error: nil
             )
         } catch {

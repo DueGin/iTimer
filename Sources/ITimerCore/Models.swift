@@ -74,6 +74,8 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     public var segments: [TimeSegment]
     public var completedAt: Date?
     public var tags: [String]
+    /// Name of one of the store's `categories`; nil = 未分类.
+    public var category: String?
     /// Identifiers of the matching events in the local calendar, aligned
     /// with `calendarRanges(asOf:)` — one per stretch of actual timing.
     public var calendarEventIDs: [String]
@@ -93,6 +95,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments: [TimeSegment] = [],
         completedAt: Date? = nil,
         tags: [String] = [],
+        category: String? = nil,
         calendarEventIDs: [String] = [],
         scheduledStart: Date? = nil,
         plannedDuration: TimeInterval? = nil,
@@ -104,6 +107,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         self.segments = segments
         self.completedAt = completedAt
         self.tags = tags
+        self.category = category
         self.calendarEventIDs = calendarEventIDs
         self.scheduledStart = scheduledStart
         self.plannedDuration = plannedDuration
@@ -111,7 +115,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, segments, completedAt, tags, calendarEventIDs
+        case id, title, createdAt, segments, completedAt, tags, category, calendarEventIDs
         case scheduledStart, plannedDuration, reminderLead
     }
 
@@ -128,6 +132,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments = try container.decode([TimeSegment].self, forKey: .segments)
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        category = try container.decodeIfPresent(String.self, forKey: .category)
         if let ids = try container.decodeIfPresent([String].self, forKey: .calendarEventIDs) {
             calendarEventIDs = ids
         } else {
