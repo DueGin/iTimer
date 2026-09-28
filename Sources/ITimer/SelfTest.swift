@@ -60,7 +60,12 @@ enum SelfTest {
             note("panel unavailable in this environment; store-level checks only")
         }
         renderBrainStates()
+        renderBurstSheet()
 
+        // The data file may be pre-seeded with finished history; count
+        // relative to it.
+        let baseRunning = TaskStore.shared.runningCount
+        let baseFile = max(0, fileTaskCount())
         // Backdated starts so "today" charts have visible bars; without this
         // the whole run fits inside one second and the report is empty.
         for (index, title) in ["写方案", "回消息", "改bug"].enumerated() {
@@ -73,8 +78,8 @@ enum SelfTest {
                 return false
             }
         }
-        guard TaskStore.shared.runningCount == 3,
-              fileTaskCount() == 3 else {
+        guard TaskStore.shared.runningCount == baseRunning + 3,
+              fileTaskCount() == baseFile + 3 else {
             note("count=\(TaskStore.shared.runningCount) file=\(fileTaskCount())")
             return false
         }
@@ -95,6 +100,21 @@ enum SelfTest {
             return false
         }
         note("close refreshed label to 脑裂 3")
+
+        // Crossing the line with the panel closed must set off the burst,
+        // and the real status item must show the colored frames.
+        guard await wait(for: 3, label: "burst", until: { StatusEffects.shared.isPlaying }) else {
+            note("brain-split burst did not start")
+            return false
+        }
+        var captures: [NSImage] = []
+        for _ in 0..<8 {
+            if let shot = statusButtonSnapshot() { captures.append(shot) }
+            try? await Task.sleep(nanoseconds: 130_000_000)
+        }
+        writeStrip(captures, scale: 4, to: "/tmp/itimer-status-burst.png")
+        note("burst played, captured \(captures.count) status frames")
+        _ = await wait(for: 3, label: "burst end", until: { !StatusEffects.shared.isPlaying })
 
         if panelAvailable {
             guard openPanel(), menuWindow() != nil else {
@@ -117,72 +137,245 @@ enum SelfTest {
             }
             note("panel survived task operation")
             snapshot(menuWindow(), to: "/tmp/itimer-popup.png")
+            // The brain buddy must animate smoothly inside the panel, not
+            // just on the panel's once-a-second refresh.
+            let startTicks = BuddyClock.panel.ticks
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let fps = BuddyClock.panel.ticks - startTicks
+            snapshot(menuWindow(), to: "/tmp/itimer-popup-later.png")
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            snapshot(menuWindow(), to: "/tmp/itimer-popup-later2.png")
+            let a = try? Data(contentsOf: URL(fileURLWithPath: "/tmp/itimer-popup-later.png"))
+            let b = try? Data(contentsOf: URL(fileURLWithPath: "/tmp/itimer-popup-later2.png"))
+            guard fps >= 20, a != b else {
+                note("brain buddy not animating in panel: \(fps) ticks/s, frames differ=\(a != b)")
+                return false
+            }
+            note("brain buddy animating at \(fps) ticks/s")
             guard closePanel() else { return false }
         }
         guard await wait(for: 2, label: "mild label", until: {
-            TaskStore.shared.statusLabel.hasPrefix("2·")
+            TaskStore.shared.statusLabel.hasSuffix("×2")
         }) else {
             note("label did not update after close: \(TaskStore.shared.statusLabel)")
             return false
         }
         note("close refreshed label to mild")
+        if panelAvailable {
+            // The buddy's timer must stop with the panel.
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            let idleStart = BuddyClock.panel.ticks
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard BuddyClock.panel.ticks == idleStart else {
+                note("brain buddy still ticking after close")
+                return false
+            }
+            note("brain buddy stopped after close")
+        }
 
         NotificationCenter.default.post(name: .iTimerOpenAnalysis, object: nil)
         guard await wait(for: 3, label: "analysis", until: {
-            NSApp.windows.contains { $0.isVisible && $0.title.contains("分析") }
+            NSApp.windows.contains { $0.isVisible && ($0.title.contains("分析") || $0.title.contains("iTimer")) }
         }) else {
             note("analysis window missing. windows=\(windowSummary())")
             return false
         }
-        note("analysis window opened")
-        renderAnalysis()
+        note("main window opened")
+        render(AnalysisView(store: TaskStore.shared), size: NSSize(width: 1100, height: 2200), to: "/tmp/itimer-analysis.png")
+        render(MainView(store: TaskStore.shared), size: NSSize(width: 1180, height: 780), to: "/tmp/itimer-main.png")
+        render(AnalysisView(store: TaskStore.shared, range: .week), size: NSSize(width: 1100, height: 1500), to: "/tmp/itimer-analysis-week.png")
+        let today = DigestCache.shared.digest(store: TaskStore.shared, range: .today)
+        let week = DigestCache.shared.digest(store: TaskStore.shared, range: .week)
+        render(
+            VStack(spacing: 16) {
+                LaneChartCard(
+                    lanes: today.lanes,
+                    splits: today.splitIntervals,
+                    threshold: today.report.threshold,
+                    hover: Date().addingTimeInterval(-3600)
+                )
+                TrendChartCard(days: week.dayScores, hover: week.dayScores.last?.day)
+            }
+            .padding(20)
+            .background(Theme.canvas),
+            size: NSSize(width: 900, height: 700),
+            to: "/tmp/itimer-hover.png"
+        )
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            render(
+                MenuBarView(store: TaskStore.shared).background(.regularMaterial),
+                size: nil,
+                appearance: appearance,
+                to: "/tmp/itimer-popup-\(name).png"
+            )
+        }
+        guard exerciseSchedules() else { return false }
+        if panelAvailable {
+            await captureRealPanel()
+        }
         return true
     }
 
-    private static func renderBrainStates() {
-        for (name, split) in [("whole", 0.0), ("crack", 0.45), ("split", 1.0)] {
-            let size: CGFloat = 128
-            let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil,
-                pixelsWide: Int(size), pixelsHigh: Int(size),
-                bitsPerSample: 8, samplesPerPixel: 4,
-                hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB,
-                bytesPerRow: 0, bitsPerPixel: 0
-            )!
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            NSColor(white: 0.93, alpha: 1).setFill()
-            NSRect(x: 0, y: 0, width: size, height: size).fill()
-            SplitBrainIcon.image(split: split, size: size).draw(in: NSRect(x: 0, y: 0, width: size, height: size))
-            NSGraphicsContext.restoreGraphicsState()
-            if let data = rep.representation(using: .png, properties: [:]) {
-                try? data.write(to: URL(fileURLWithPath: "/tmp/itimer-brain-\(name).png"))
+    /// Snapshot the live MenuBarExtra panel with schedules, then with the
+    /// composer open, plus the main window — for visual review.
+    private static func captureRealPanel() async {
+        if let main = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 800 }) {
+            snapshot(main, to: "/tmp/itimer-real-main.png")
+        }
+        _ = closePanel()
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        var open = false
+        for _ in 1...3 where !open {
+            for window in NSApp.windows where window.isVisible && window.frame.width > 800 {
+                window.orderOut(nil)
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            _ = openPanel()
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            open = menuWindow() != nil
+        }
+        guard open else { note("panel would not reopen for capture"); return }
+        snapshot(menuWindow(), to: "/tmp/itimer-real-panel.png")
+        NotificationCenter.default.post(name: .iTimerNewSchedule, object: false)
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        snapshot(menuWindow(), to: "/tmp/itimer-real-composer.png")
+        _ = closePanel()
+    }
+
+    /// Schedules never start on their own; overtime keeps counting.
+    private static func exerciseSchedules() -> Bool {
+        let store = TaskStore.shared
+        let now = Date()
+        for task in store.runningTasks { store.complete(id: task.id, at: now) }
+        guard let due = store.addSchedule(title: "周会 #会议", start: now.addingTimeInterval(-600), plannedDuration: 3600, reminderLead: 0),
+              store.addSchedule(title: "写周报 #工作", start: now.addingTimeInterval(7200), plannedDuration: 7200, reminderLead: 600) != nil,
+              let review = store.addSchedule(title: "代码评审", start: now.addingTimeInterval(-3 * 3600), plannedDuration: 3600, reminderLead: nil) else {
+            note("addSchedule failed")
+            return false
+        }
+        store.resume(id: review.id, at: now.addingTimeInterval(-90 * 60))
+        store.tick()
+        guard store.dueSchedules.map(\.id) == [due.id],
+              store.upcomingSchedules.count == 1,
+              store.runningCount == 1,
+              store.runningTasks[0].isOvertime(asOf: store.now) else {
+            note("schedule state wrong: due=\(store.dueSchedules.count) upcoming=\(store.upcomingSchedules.count) running=\(store.runningCount)")
+            return false
+        }
+        note("due schedule waits for start; running schedule in overtime")
+        render(MenuBarView(store: store), size: NSSize(width: 380, height: 640), to: "/tmp/itimer-schedule-popup.png")
+        var draft = ScheduleDraft.new(title: "准备季度汇报 #工作", asOf: now)
+        render(
+            ScheduleComposer(
+                draft: Binding(get: { draft }, set: { draft = $0 }),
+                now: now,
+                onSave: {}, onStartNow: {}, onCancel: {}
+            )
+            .padding(16),
+            size: NSSize(width: 380, height: 420),
+            to: "/tmp/itimer-composer.png"
+        )
+        return true
+    }
+
+    private static func renderBurstSheet() {
+        let size = NSSize(width: 22, height: 18)
+        var frames: [NSImage] = []
+        for step in 0...10 {
+            frames.append(SplitBrainIcon.burstFrame(.blast, t: CGFloat(step) / 10, pieces: 4, intensity: 2, size: size))
+        }
+        writeStrip(frames, scale: 6, to: "/tmp/itimer-burst-sheet.png")
+        frames = (0...8).map { SplitBrainIcon.burstFrame(.wobble, t: CGFloat($0) / 8, pieces: 4, size: size) }
+        writeStrip(frames, scale: 6, to: "/tmp/itimer-wobble-sheet.png")
+        frames = (0...8).map { SplitBrainIcon.burstFrame(.heal, t: CGFloat($0) / 8, pieces: 3, size: size) }
+        writeStrip(frames, scale: 6, to: "/tmp/itimer-heal-sheet.png")
+        note("burst sheets rendered")
+    }
+
+    private static func statusButtonSnapshot() -> NSImage? {
+        guard let button = NSApp.windows.flatMap({ collect(NSStatusBarButton.self, in: $0.contentView) }).first,
+              let rep = button.bitmapImageRepForCachingDisplay(in: button.bounds) else { return nil }
+        button.cacheDisplay(in: button.bounds, to: rep)
+        let image = NSImage(size: button.bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    /// Lays images side by side, scaled up, on light and dark bands.
+    private static func writeStrip(_ images: [NSImage], scale: CGFloat, to path: String) {
+        guard !images.isEmpty else { return }
+        let cell = NSSize(
+            width: (images.map(\.size.width).max() ?? 22) * scale,
+            height: (images.map(\.size.height).max() ?? 18) * scale
+        )
+        let gap: CGFloat = 8
+        let width = Int((cell.width + gap) * CGFloat(images.count) + gap)
+        let height = Int(cell.height * 2 + gap * 3)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .none
+        NSColor(white: 0.5, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        for (row, background) in [NSColor(white: 0.94, alpha: 1), NSColor(white: 0.16, alpha: 1)].enumerated() {
+            let y = gap + CGFloat(row) * (cell.height + gap)
+            for (index, image) in images.enumerated() {
+                let x = gap + CGFloat(index) * (cell.width + gap)
+                let rect = NSRect(x: x, y: y, width: cell.width, height: cell.height)
+                background.setFill()
+                rect.fill()
+                image.draw(in: NSRect(x: x, y: y, width: image.size.width * scale, height: image.size.height * scale))
             }
         }
+        NSGraphicsContext.restoreGraphicsState()
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private static func renderBrainStates() {
+        // Resting status glyphs: whole, cracked in two, then split 3–6.
+        let states: [(Int, CGFloat)] = [(1, 0), (2, SplitBrainIcon.crackSpread), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)]
+        writeStrip(states.map { SplitBrainIcon.statusImage(pieces: $0.0, spread: $0.1) }, scale: 6, to: "/tmp/itimer-brain-states.png")
+        let buddies = HStack(spacing: 12) {
+            ForEach([0, 1, 2, 3, 4], id: \.self) { count in
+                BrainBuddy(running: count, threshold: 3, tint: count == 0 ? Color(nsColor: .systemGray) : Theme.load(count, threshold: 3))
+                    .scaleEffect(2)
+                    .frame(width: 136, height: 120)
+            }
+        }
+        .padding(12)
+        render(buddies, size: nil, to: "/tmp/itimer-buddies.png")
+        render(buddies, size: nil, appearance: .darkAqua, to: "/tmp/itimer-buddies-dark.png")
         note("brain states rendered")
     }
 
-    private static func renderAnalysis() {
-        let store = TaskStore.shared
-        let hosting = NSHostingView(rootView: AnalysisView(store: store))
-        hosting.frame = NSRect(x: 0, y: 0, width: 1080, height: 720)
+    /// Offscreen render of any view. `size` nil = the view's own fitting size.
+    private static func render<V: View>(_ view: V, size: NSSize?, appearance: NSAppearance.Name = .aqua, to path: String) {
+        let hosting = NSHostingView(rootView: view)
+        hosting.appearance = NSAppearance(named: appearance)
+        hosting.frame = NSRect(origin: .zero, size: size ?? hosting.fittingSize)
         let offscreen = NSWindow(
             contentRect: hosting.frame,
             styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
+        offscreen.appearance = NSAppearance(named: appearance)
         offscreen.contentView = hosting
         offscreen.orderFrontRegardless()
         offscreen.displayIfNeeded()
         hosting.layoutSubtreeIfNeeded()
         CATransaction.flush()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         CATransaction.flush()
-        snapshot(offscreen, to: "/tmp/itimer-analysis.png")
+        snapshot(offscreen, to: path)
         offscreen.orderOut(nil)
-        
     }
 
     private static func snapshot(_ window: NSWindow?, to path: String) {

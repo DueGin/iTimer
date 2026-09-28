@@ -58,6 +58,11 @@ public final class TaskStore {
     /// Calendar writer, injected by the app. Nil in tests unless a fake is set.
     public var syncer: (any TaskCalendarSyncing)?
 
+    /// Notification scheduler, injected by the app. Reconciled after every save.
+    public var reminders: (any ScheduleReminding)? {
+        didSet { reconcileReminders() }
+    }
+
     private var ticker: DispatchSourceTimer?
 
     public init(url: URL, now: Date = Date()) {
@@ -89,7 +94,53 @@ public final class TaskStore {
         tasks.filter(\.isPaused).sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Schedules whose time has come but which have not been started yet.
+    public var dueSchedules: [TaskItem] {
+        tasks.filter { $0.isDue(asOf: now) }.sorted(by: Self.byScheduledStart)
+    }
+
+    /// Schedules still in the future.
+    public var upcomingSchedules: [TaskItem] {
+        tasks.filter { $0.isPending && !$0.isDue(asOf: now) }.sorted(by: Self.byScheduledStart)
+    }
+
+    private static func byScheduledStart(_ lhs: TaskItem, _ rhs: TaskItem) -> Bool {
+        (lhs.scheduledStart ?? lhs.createdAt) < (rhs.scheduledStart ?? rhs.createdAt)
+    }
+
     public var runningCount: Int { runningTasks.count }
+
+    /// Tasks finished since local midnight, most recent first.
+    public func completedToday(calendar: Calendar = .current) -> [TaskItem] {
+        let start = calendar.startOfDay(for: now)
+        return tasks
+            .filter { ($0.completedAt ?? .distantPast) >= start }
+            .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
+    }
+
+    /// Recently used task inputs ("title #tag"), newest first, for one-tap
+    /// restarts. Skips anything still open and exact matches of the query.
+    public func suggestions(matching query: String = "", limit: Int = 6) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let open = Set(tasks.filter { !$0.isCompleted }.map { Self.input(for: $0).lowercased() })
+        var seen: Set<String> = []
+        var result: [String] = []
+        for task in tasks.sorted(by: { $0.createdAt > $1.createdAt }) {
+            let input = Self.input(for: task)
+            let key = input.lowercased()
+            guard !open.contains(key), seen.insert(key).inserted else { continue }
+            if !needle.isEmpty {
+                guard key.contains(needle), key != needle else { continue }
+            }
+            result.append(input)
+            if result.count == limit { break }
+        }
+        return result
+    }
+
+    private static func input(for task: TaskItem) -> String {
+        ([task.title] + task.tags.map { "#\($0)" }).joined(separator: " ")
+    }
 
     public var longestRunningElapsed: TimeInterval {
         runningTasks.map { $0.duration(asOf: now) }.max() ?? 0
@@ -105,6 +156,12 @@ public final class TaskStore {
 
     public var statusAccessibilityLabel: String {
         statusFrozen ? frozenAccessibilityLabel : computedStatusAccessibilityLabel
+    }
+
+    /// Running count as the status item shows it (held while frozen, since
+    /// the icon draws one brain piece per running task).
+    public var statusRunningCount: Int {
+        statusFrozen ? frozenRunningCount : runningCount
     }
 
     public func startTicking() {
@@ -139,6 +196,7 @@ public final class TaskStore {
     private var frozenLabel = ""
     private var frozenVerdict: FocusVerdict = .idle
     private var frozenAccessibilityLabel = ""
+    private var frozenRunningCount = 0
 
     public func setStatusFrozen(_ frozen: Bool) {
         guard frozen != statusFrozen else { return }
@@ -146,6 +204,7 @@ public final class TaskStore {
             frozenLabel = computedStatusLabel
             frozenVerdict = computedLiveVerdict
             frozenAccessibilityLabel = computedStatusAccessibilityLabel
+            frozenRunningCount = runningCount
         }
         statusFrozen = frozen
     }
@@ -160,7 +219,8 @@ public final class TaskStore {
         StatusText.label(
             runningCount: runningCount,
             longestElapsed: longestRunningElapsed,
-            threshold: brainSplitThreshold
+            threshold: brainSplitThreshold,
+            dueCount: dueSchedules.count
         )
     }
 
@@ -168,13 +228,14 @@ public final class TaskStore {
         StatusText.accessibility(
             runningCount: runningCount,
             threshold: brainSplitThreshold,
-            verdict: liveVerdict
+            verdict: liveVerdict,
+            dueCount: dueSchedules.count
         )
     }
 
     @discardableResult
     public func addTask(title: String, at now: Date? = nil) -> TaskItem? {
-        let stamp = now ?? self.now
+        let stamp = now ?? Date()
         let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return nil }
         let parsed = TitleParser.parse(cleaned)
@@ -193,9 +254,68 @@ public final class TaskStore {
         return tasks.first { $0.id == task.id }
     }
 
+    /// Add a schedule. It does not start timing — not even once its start
+    /// time passes; the user starts it explicitly via `resume(id:)`.
+    @discardableResult
+    public func addSchedule(
+        title: String,
+        start: Date,
+        plannedDuration: TimeInterval?,
+        reminderLead: TimeInterval?,
+        at now: Date? = nil
+    ) -> TaskItem? {
+        let stamp = now ?? self.now
+        let parsed = TitleParser.parse(title.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !parsed.title.isEmpty else { return nil }
+        let task = TaskItem(
+            title: String(parsed.title.prefix(80)),
+            createdAt: stamp,
+            tags: parsed.tags,
+            scheduledStart: start,
+            plannedDuration: plannedDuration.map { max(60, $0) },
+            reminderLead: reminderLead.map { max(0, $0) }
+        )
+        tasks.insert(task, at: 0)
+        save()
+        syncTask(id: task.id)
+        return tasks.first { $0.id == task.id }
+    }
+
+    /// Change time, estimate or reminder. The estimate stays editable while
+    /// running (e.g. to admit it will take longer); the start only before.
+    @discardableResult
+    public func updateSchedule(
+        id: UUID,
+        start: Date,
+        plannedDuration: TimeInterval?,
+        reminderLead: TimeInterval?
+    ) -> Bool {
+        guard let index = tasks.firstIndex(where: { $0.id == id }), !tasks[index].isCompleted else { return false }
+        if tasks[index].isPending {
+            tasks[index].scheduledStart = start
+        }
+        tasks[index].plannedDuration = plannedDuration.map { max(60, $0) }
+        tasks[index].reminderLead = reminderLead.map { max(0, $0) }
+        save()
+        syncTask(id: id)
+        return true
+    }
+
+    /// Snooze a pending schedule: move its start to `interval` from now.
+    @discardableResult
+    public func postpone(id: UUID, by interval: TimeInterval, at now: Date? = nil) -> Bool {
+        let stamp = now ?? self.now
+        guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].isPending else { return false }
+        tasks[index].scheduledStart = stamp.addingTimeInterval(interval)
+        self.now = stamp
+        save()
+        syncTask(id: id)
+        return true
+    }
+
     @discardableResult
     public func pause(id: UUID, at now: Date? = nil) -> Bool {
-        let stamp = now ?? self.now
+        let stamp = now ?? Date()
         guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].isRunning else { return false }
         guard var segment = tasks[index].segments.last else { return false }
         segment.endedAt = max(segment.startedAt, stamp)
@@ -208,7 +328,7 @@ public final class TaskStore {
 
     @discardableResult
     public func resume(id: UUID, at now: Date? = nil) -> Bool {
-        let stamp = now ?? self.now
+        let stamp = now ?? Date()
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
         guard !tasks[index].isRunning else { return false }
         tasks[index].completedAt = nil
@@ -221,7 +341,7 @@ public final class TaskStore {
 
     @discardableResult
     public func complete(id: UUID, at now: Date? = nil) -> Bool {
-        let stamp = now ?? self.now
+        let stamp = now ?? Date()
         guard let index = tasks.firstIndex(where: { $0.id == id }), !tasks[index].isCompleted else { return false }
         if tasks[index].isRunning, var segment = tasks[index].segments.last {
             segment.endedAt = max(segment.startedAt, stamp)
@@ -231,6 +351,21 @@ public final class TaskStore {
         self.now = stamp
         save()
         syncTask(id: id)
+        return true
+    }
+
+    /// Single-core mode: keep only this task running. Pauses every other
+    /// running task and resumes this one if it was paused.
+    @discardableResult
+    public func focus(id: UUID, at now: Date? = nil) -> Bool {
+        let stamp = now ?? Date()
+        guard let target = tasks.first(where: { $0.id == id }), !target.isCompleted else { return false }
+        for other in runningTasks where other.id != id {
+            pause(id: other.id, at: stamp)
+        }
+        if !target.isRunning {
+            resume(id: id, at: stamp)
+        }
         return true
     }
 
@@ -309,6 +444,11 @@ public final class TaskStore {
         } catch {
             lastError = error.localizedDescription
         }
+        reconcileReminders()
+    }
+
+    public func reconcileReminders() {
+        reminders?.reconcile(ReminderPlan.reminders(for: tasks, asOf: now))
     }
 
     private struct LoadResult {

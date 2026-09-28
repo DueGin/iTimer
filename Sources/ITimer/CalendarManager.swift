@@ -37,13 +37,13 @@ final class EventKitSync: TaskCalendarSyncing {
             event.calendar = target
         }
         event.title = task.title
-        let start = task.segments.first?.startedAt ?? task.createdAt
-        var end = task.segments.last?.endedAt ?? task.completedAt ?? (task.isRunning ? now : now)
-        if end <= start { end = start.addingTimeInterval(60) }
-        event.startDate = start
-        event.endDate = end
+        // Planned slot until started, then the real time actually spent.
+        let range = task.calendarRange(asOf: now)
+        event.startDate = range.start
+        event.endDate = range.end
         let tagLine = task.tags.isEmpty ? "" : "#" + task.tags.joined(separator: " #") + "\n"
-        event.notes = tagLine + "iTimer"
+        let planLine = task.plannedDuration.map { "预计 \(DurationFormat.prose($0))\n" } ?? ""
+        event.notes = tagLine + planLine + "iTimer"
         do {
             try eventStore.save(event, span: .thisEvent, commit: true)
             return event.eventIdentifier
@@ -69,7 +69,7 @@ final class EventKitSync: TaskCalendarSyncing {
         let fresh = EKCalendar(for: .event, eventStore: eventStore)
         fresh.title = "iTimer"
         fresh.source = source
-        fresh.cgColor = NSColor.systemTeal.cgColor
+        fresh.cgColor = NSColor.systemIndigo.cgColor
         do {
             try eventStore.saveCalendar(fresh, commit: true)
             UserDefaults.standard.set(fresh.calendarIdentifier, forKey: "itimer.calendarID")

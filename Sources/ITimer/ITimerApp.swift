@@ -7,12 +7,20 @@ struct ITimerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        Window("iTimer", id: "main") {
             MainView(store: .shared)
         }
-        .defaultSize(width: 1080, height: 720)
+        .defaultSize(width: 1180, height: 780)
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unifiedCompact)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("新建任务") {
+                    NotificationCenter.default.post(name: .iTimerFocusNewTask, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+        }
 
         MenuBarExtra {
             MenuBarView(store: .shared)
@@ -21,19 +29,8 @@ struct ITimerApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("任务分析", id: "analysis") {
-            AnalysisView(store: .shared)
-        }
-        .defaultSize(width: 780, height: 680)
-        .windowResizability(.contentMinSize)
-    }
-
-    var commands: some Commands {
-        CommandGroup(after: .newItem) {
-            Button("新建任务") {
-                NotificationCenter.default.post(name: .iTimerFocusNewTask, object: nil)
-            }
-            .keyboardShortcut("n", modifiers: .command)
+        Settings {
+            SettingsView(store: .shared)
         }
     }
 }
@@ -46,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var clockTimer: DispatchSourceTimer?
+    @MainActor private static var panelWasOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
@@ -74,8 +72,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !panelOpen && store.isStatusFrozen {
                     store.setStatusFrozen(false)
                 }
+                if !panelOpen && AppDelegate.panelWasOpen {
+                    NotificationCenter.default.post(name: .iTimerPanelClosed, object: nil)
+                }
+                AppDelegate.panelWasOpen = panelOpen
+                // Brain buddies animate only while actually on screen.
+                BuddyClock.panel.run(panelOpen)
+                BuddyClock.window.run(NSApp.windows.contains {
+                    $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
+                        && $0.identifier?.rawValue.hasPrefix("main") == true
+                })
                 if !panelOpen {
                     store.tick()
+                    StatusEffects.shared.heartbeat(
+                        running: store.runningCount,
+                        threshold: store.brainSplitThreshold
+                    )
                 }
             }
         }
@@ -87,13 +99,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard DebugLaunchFile.current == nil else { return }
         Task { @MainActor in
             NudgeCenter.shared.start()
+            ReminderCenter.shared.start(store: TaskStore.shared)
         }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 2, repeating: 2)
         timer.setEventHandler {
             Task { @MainActor in
-                let store = TaskStore.shared
-                NudgeCenter.shared.observe(runningCount: store.runningCount, verdict: store.liveVerdict)
+                NudgeCenter.shared.observe(store: TaskStore.shared)
             }
         }
         timer.resume()
@@ -111,23 +123,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct StatusLabel: View {
     var store: TaskStore
-    @State private var pulse = false
+    var effects = StatusEffects.shared
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(nsImage: SplitBrainIcon.image(split: splitAmount))
-                .renderingMode(.template)
-                .foregroundStyle(iconColor)
-                .opacity(store.liveVerdict == .brainSplit && pulse ? 0.35 : 1)
-                .animation(
-                    store.liveVerdict == .brainSplit
-                        ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
-                        : .default,
-                    value: pulse
-                )
-                .onChange(of: store.liveVerdict, initial: true) { _, verdict in
-                    pulse = verdict == .brainSplit
-                }
+        HStack(spacing: 1) {
+            // A burst frame (colored) replaces the template glyph while the
+            // brain-split explosion plays.
+            if let frame = effects.frame {
+                Image(nsImage: frame)
+                    .renderingMode(.original)
+            } else if store.liveVerdict == .brainSplit {
+                // Same red as the burst frames, so the hand-off is seamless.
+                Image(nsImage: SplitBrainIcon.statusImage(pieces: pieces, spread: spread, tint: .systemRed))
+                    .renderingMode(.original)
+            } else {
+                Image(nsImage: SplitBrainIcon.statusImage(pieces: pieces, spread: spread))
+                    .renderingMode(.template)
+                    .foregroundStyle(iconColor)
+            }
             if !store.statusLabel.isEmpty {
                 Text(store.statusLabel)
                     .monospacedDigit()
@@ -137,11 +150,16 @@ struct StatusLabel: View {
         .accessibilityIdentifier("status-item")
     }
 
-    /// 0 running = idle dim whole brain, 1 = whole, 2 = cracking, ≥line = split.
-    private var splitAmount: CGFloat {
+    /// One piece per running task: 0–1 = whole brain, under the line =
+    /// cracked into pieces, at or past it = pieces pulled apart.
+    private var pieces: Int {
+        max(1, store.statusRunningCount)
+    }
+
+    private var spread: CGFloat {
         switch store.liveVerdict {
         case .brainSplit: 1.0
-        case .mild: 0.45
+        case .mild: SplitBrainIcon.crackSpread
         case .focused, .idle: 0
         }
     }
@@ -160,4 +178,8 @@ extension Notification.Name {
     static let iTimerPauseFirst = Notification.Name("iTimerPauseFirst")
     static let iTimerOpenAnalysis = Notification.Name("iTimerOpenAnalysis")
     static let iTimerFocusNewTask = Notification.Name("iTimerFocusNewTask")
+    static let iTimerNewSchedule = Notification.Name("iTimerNewSchedule")
+    /// Posted by the clock loop; SwiftUI's onDisappear does not fire for
+    /// MenuBarExtra panels.
+    static let iTimerPanelClosed = Notification.Name("iTimerPanelClosed")
 }

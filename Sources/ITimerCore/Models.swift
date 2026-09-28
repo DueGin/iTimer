@@ -76,6 +76,14 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     public var tags: [String]
     /// Identifier of the matching event in the local calendar, once synced.
     public var calendarEventID: String?
+    /// Planned start. Scheduled items stay idle (no segments) until the user
+    /// explicitly starts them, even after this time has passed.
+    public var scheduledStart: Date?
+    /// Estimated length. Timing is allowed to run past it (overtime).
+    public var plannedDuration: TimeInterval?
+    /// How long before `scheduledStart` to remind. nil = no reminders,
+    /// 0 = at the start time only.
+    public var reminderLead: TimeInterval?
 
     public init(
         id: UUID = UUID(),
@@ -84,7 +92,10 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments: [TimeSegment] = [],
         completedAt: Date? = nil,
         tags: [String] = [],
-        calendarEventID: String? = nil
+        calendarEventID: String? = nil,
+        scheduledStart: Date? = nil,
+        plannedDuration: TimeInterval? = nil,
+        reminderLead: TimeInterval? = nil
     ) {
         self.id = id
         self.title = title
@@ -93,10 +104,14 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         self.completedAt = completedAt
         self.tags = tags
         self.calendarEventID = calendarEventID
+        self.scheduledStart = scheduledStart
+        self.plannedDuration = plannedDuration
+        self.reminderLead = reminderLead
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, createdAt, segments, completedAt, tags, calendarEventID
+        case scheduledStart, plannedDuration, reminderLead
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +123,9 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         calendarEventID = try container.decodeIfPresent(String.self, forKey: .calendarEventID)
+        scheduledStart = try container.decodeIfPresent(Date.self, forKey: .scheduledStart)
+        plannedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .plannedDuration)
+        reminderLead = try container.decodeIfPresent(TimeInterval.self, forKey: .reminderLead)
     }
 
     public var isCompleted: Bool { completedAt != nil }
@@ -117,7 +135,46 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     public var isPaused: Bool {
-        completedAt == nil && !isRunning
+        completedAt == nil && !isRunning && !segments.isEmpty
+    }
+
+    /// A schedule that has never been started.
+    public var isPending: Bool {
+        completedAt == nil && segments.isEmpty
+    }
+
+    /// Pending and its start time has arrived — waiting for the user to start it.
+    public func isDue(asOf now: Date) -> Bool {
+        isPending && (scheduledStart ?? createdAt) <= now
+    }
+
+    /// Time left before the estimate runs out; nil without an estimate.
+    public func remaining(asOf now: Date) -> TimeInterval? {
+        plannedDuration.map { $0 - duration(asOf: now) }
+    }
+
+    /// Time spent past the estimate (0 when within it or without one).
+    public func overtime(asOf now: Date) -> TimeInterval {
+        max(0, -(remaining(asOf: now) ?? 0))
+    }
+
+    public func isOvertime(asOf now: Date) -> Bool {
+        overtime(asOf: now) > 0
+    }
+
+    /// Calendar placement: actual time once started, the plan before that.
+    public func calendarRange(asOf now: Date) -> DateInterval {
+        let start: Date
+        var end: Date
+        if let first = segments.first {
+            start = first.startedAt
+            end = segments.last?.endedAt ?? completedAt ?? now
+        } else {
+            start = scheduledStart ?? createdAt
+            end = start.addingTimeInterval(plannedDuration ?? 30 * 60)
+        }
+        if end <= start { end = start.addingTimeInterval(60) }
+        return DateInterval(start: start, end: end)
     }
 
     public func duration(asOf now: Date) -> TimeInterval {
@@ -264,16 +321,16 @@ public enum DurationFormat {
 }
 
 public enum StatusText {
-    public static func label(runningCount: Int, longestElapsed: TimeInterval, threshold: Int) -> String {
-        guard runningCount > 0 else { return "" }
+    public static func label(runningCount: Int, longestElapsed: TimeInterval, threshold: Int, dueCount: Int = 0) -> String {
+        guard runningCount > 0 else { return dueCount > 0 ? "待开始 \(dueCount)" : "" }
         if runningCount >= threshold { return "脑裂 \(runningCount)" }
         let clock = DurationFormat.clock(longestElapsed)
         if runningCount == 1 { return clock }
-        return "\(runningCount)·\(clock)"
+        return "\(clock) ×\(runningCount)"
     }
 
-    public static func accessibility(runningCount: Int, threshold: Int, verdict: FocusVerdict) -> String {
-        if runningCount <= 0 { return "iTimer 空闲" }
+    public static func accessibility(runningCount: Int, threshold: Int, verdict: FocusVerdict, dueCount: Int = 0) -> String {
+        if runningCount <= 0 { return dueCount > 0 ? "iTimer \(dueCount) 个日程待开始" : "iTimer 空闲" }
         return "iTimer 进行中 \(runningCount) \(verdict.title)"
     }
 }

@@ -1,20 +1,20 @@
 import Foundation
 
 /// Reports sweep the full task history; recomputing them on every one-second
-/// UI tick is wasteful. Memoize on (tasks, range, threshold, 30s time bucket).
+/// UI tick is wasteful. Memoize per range on (tasks, threshold, 30s bucket) —
+/// the panel always wants "today" while the analysis view may show another
+/// range, so a single slot would thrash.
 @MainActor
 public final class ReportCache {
     public static let shared = ReportCache()
 
     private struct Key: Equatable {
         var tasks: [TaskItem]
-        var range: AnalysisRange
         var threshold: Int
         var bucket: Int
     }
 
-    private var key: Key?
-    private var value: ParallelismReport?
+    private var entries: [AnalysisRange: (key: Key, value: ParallelismReport)] = [:]
     /// Exposed for tests: how many times the report was actually computed.
     public private(set) var computations = 0
 
@@ -23,21 +23,18 @@ public final class ReportCache {
     public func report(store: TaskStore, range: AnalysisRange) -> ParallelismReport {
         let key = Key(
             tasks: store.tasks,
-            range: range,
             threshold: store.brainSplitThreshold,
             bucket: Int(store.now.timeIntervalSince1970 / 30)
         )
-        if key == self.key, let value { return value }
+        if let entry = entries[range], entry.key == key { return entry.value }
         let fresh = store.report(range: range)
         computations += 1
-        self.key = key
-        self.value = fresh
+        entries[range] = (key, fresh)
         return fresh
     }
 
     public func invalidate() {
-        key = nil
-        value = nil
+        entries.removeAll()
     }
 }
 

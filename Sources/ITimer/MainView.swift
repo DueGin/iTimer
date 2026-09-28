@@ -11,11 +11,11 @@ struct MainView: View {
         ZStack {
             NavigationSplitView {
                 MenuBarView(store: store, embedded: true)
-                    .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 420)
-                    .navigationTitle("任务")
+                    .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 440)
+                    .navigationTitle("日程")
             } detail: {
                 AnalysisView(store: store)
-                    .navigationTitle("并行分析")
+                    .navigationTitle("注意力分析")
             }
             if confettiSeed > 0 {
                 ConfettiView(seed: confettiSeed)

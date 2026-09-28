@@ -117,7 +117,7 @@ final class AnalyzerTests: XCTestCase {
     func testStatusLabel() {
         XCTAssertEqual(StatusText.label(runningCount: 0, longestElapsed: 10, threshold: 3), "")
         XCTAssertEqual(StatusText.label(runningCount: 1, longestElapsed: 65, threshold: 3), "01:05")
-        XCTAssertEqual(StatusText.label(runningCount: 2, longestElapsed: 3661, threshold: 3), "2·1:01:01")
+        XCTAssertEqual(StatusText.label(runningCount: 2, longestElapsed: 3661, threshold: 3), "1:01:01 ×2")
         XCTAssertEqual(StatusText.label(runningCount: 3, longestElapsed: 10, threshold: 3), "脑裂 3")
     }
 
@@ -236,6 +236,137 @@ final class AnalyzerTests: XCTestCase {
         let window = AnalysisRange.today.window(asOf: now, tasks: [], calendar: calendar)
         XCTAssertEqual(window.start, calendar.startOfDay(for: now))
         XCTAssertEqual(window.end, now)
+    }
+
+    func testFocusScoreWeighsBandsAndSwitches() {
+        let window = DateInterval(start: t0, end: t0.addingTimeInterval(3600))
+        let solo = ParallelismAnalyzer.report(tasks: [task("单核", from: 0, to: 3600)], window: window, threshold: 3, now: window.end)
+        XCTAssertEqual(FocusScore.score(report: solo), 100)
+        XCTAssertEqual(FocusScore.tier(for: 100), .flow)
+
+        // Half the hour at 3 threads: solo 30min, split 30min, 2 switches/h.
+        let split = ParallelismAnalyzer.report(
+            tasks: [task("主线", from: 0, to: 3600), task("插A", from: 1800, to: 3600), task("插B", from: 1800, to: 3600)],
+            window: window, threshold: 3, now: window.end
+        )
+        // (0.5 * 1 + 0.5 * 0.15) - 2 * 0.03 ≈ 0.515
+        XCTAssertEqual(FocusScore.score(report: split), 51)
+        XCTAssertEqual(FocusScore.tier(for: 51), .scattered)
+        XCTAssertEqual(FocusScore.tier(for: 20), .overloaded)
+
+        let empty = ParallelismAnalyzer.report(tasks: [], window: window, threshold: 3, now: window.end)
+        XCTAssertNil(FocusScore.score(report: empty))
+    }
+
+    func testHoursSplitAcrossHourBoundaries() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let nine = calendar.date(from: DateComponents(year: 2024, month: 3, day: 1, hour: 9, minute: 30))!
+        let slices = [
+            ConcurrencySlice(id: 0, start: nine, end: nine.addingTimeInterval(3600), concurrency: 1),
+            ConcurrencySlice(id: 1, start: nine.addingTimeInterval(3600), end: nine.addingTimeInterval(4200), concurrency: 3),
+        ]
+        let hours = ChartSeries.hours(of: slices, threshold: 3, calendar: calendar)
+        XCTAssertEqual(hours.count, 24)
+        XCTAssertEqual(hours[9].focused, 1800, accuracy: 0.001)
+        XCTAssertEqual(hours[10].focused, 1800, accuracy: 0.001)
+        XCTAssertEqual(hours[10].brainSplit, 600, accuracy: 0.001)
+        XCTAssertEqual(hours[11].total, 0, accuracy: 0.001)
+    }
+
+    func testLanesSplitIntervalsAndLongestSolo() {
+        let tasks = [
+            task("主线", from: 0, to: 1000),
+            task("插入A", from: 100, to: 200),
+            task("插入B", from: 150, to: 300),
+            task("接力", from: 1000, to: 1600),
+        ]
+        let window = DateInterval(start: t0, end: t0.addingTimeInterval(1600))
+        let lanes = ChartSeries.lanes(tasks: tasks, window: window, now: window.end, limit: 3)
+        // Top 3 by duration, ordered by first start: 主线, 插入B, 接力.
+        XCTAssertEqual(lanes.map(\.title), ["主线", "插入B", "接力"])
+
+        let report = ParallelismAnalyzer.report(tasks: tasks, window: window, threshold: 3, now: window.end)
+        let splits = ChartSeries.splitIntervals(of: report.slices, threshold: 3)
+        XCTAssertEqual(splits, [DateInterval(start: t0.addingTimeInterval(150), end: t0.addingTimeInterval(200))])
+
+        // 300→1000 solo on 主线, then an exact handoff to 接力 until 1600.
+        let solo = ChartSeries.longestSolo(of: report.slices)
+        XCTAssertEqual(solo?.start, t0.addingTimeInterval(300))
+        XCTAssertEqual(solo?.duration ?? 0, 1300, accuracy: 0.001)
+    }
+
+    func testInsightsSurfaceWarningsFirst() {
+        let tasks = [
+            task("写方案", from: 0, to: 3600),
+            task("回消息", from: 600, to: 1800),
+            task("开会", from: 900, to: 1500),
+            task("看群", from: 2000, to: 2100),
+            task("回邮件", from: 2200, to: 2300),
+        ]
+        let window = DateInterval(start: t0, end: t0.addingTimeInterval(3600))
+        let report = ParallelismAnalyzer.report(tasks: tasks, window: window, threshold: 3, now: window.end)
+        let insights = Insights.generate(report: report)
+        XCTAssertEqual(insights.first?.id, "switch-rate")
+        XCTAssertTrue(insights.contains { $0.id == "split-hour" })
+        XCTAssertTrue(insights.contains { $0.id == "overlap" && $0.title.contains("写方案") })
+        XCTAssertEqual(insights.first(where: { $0.tone == .warning })?.tone, .warning)
+        XCTAssertLessThanOrEqual(insights.count, 4)
+
+        let calm = ParallelismAnalyzer.report(tasks: [task("单核", from: 0, to: 3600)], window: window, threshold: 3, now: window.end)
+        XCTAssertEqual(Set(Insights.generate(report: calm).map(\.id)), ["longest-solo", "no-switch"])
+    }
+
+    func testPreviousWindowShiftsByOneCycle() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2024, month: 3, day: 10, hour: 15))!
+        let today = AnalysisRange.today.window(asOf: now, tasks: [], calendar: calendar)
+        let yesterday = AnalysisRange.today.previousWindow(of: today, calendar: calendar)
+        XCTAssertEqual(yesterday?.start, calendar.date(from: DateComponents(year: 2024, month: 3, day: 9)))
+        XCTAssertEqual(yesterday?.end, calendar.date(from: DateComponents(year: 2024, month: 3, day: 9, hour: 15)))
+        let week = AnalysisRange.week.window(asOf: now, tasks: [], calendar: calendar)
+        XCTAssertEqual(AnalysisRange.week.previousWindow(of: week, calendar: calendar)?.end, now.addingTimeInterval(-7 * 86_400))
+        XCTAssertNil(AnalysisRange.all.previousWindow(of: week, calendar: calendar))
+    }
+
+    func testDigestComparesWithYesterdayAndScoresDays() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2024, month: 3, day: 10, hour: 12))!
+        func at(_ day: Int, _ hour: Double) -> Date {
+            calendar.date(from: DateComponents(year: 2024, month: 3, day: day))!.addingTimeInterval(hour * 3600)
+        }
+        func span(_ title: String, _ start: Date, _ end: Date) -> TaskItem {
+            TaskItem(title: title, createdAt: start, segments: [TimeSegment(startedAt: start, endedAt: end)])
+        }
+        let tasks = [
+            // Yesterday morning: messy, three threads for an hour.
+            span("甲", at(9, 9), at(9, 11)),
+            span("乙", at(9, 10), at(9, 11)),
+            span("丙", at(9, 10), at(9, 11)),
+            // Today morning: clean single thread.
+            span("甲", at(10, 9), at(10, 11)),
+            // Two days ago: nothing. Three days ago: some solo work.
+            span("丁", at(7, 9), at(7, 10)),
+        ]
+
+        let today = AnalysisDigest.build(tasks: tasks, range: .today, threshold: 3, now: now, calendar: calendar)
+        XCTAssertEqual(today.score, 100)
+        XCTAssertNotNil(today.previousScore)
+        XCTAssertLessThan(today.previousScore ?? 100, 100)
+        XCTAssertEqual(today.insights.first?.id, "trend")
+        XCTAssertEqual(today.insights.first?.tone, .positive)
+        XCTAssertFalse(today.lanes.isEmpty)
+        XCTAssertTrue(today.dayScores.isEmpty)
+
+        let week = AnalysisDigest.build(tasks: tasks, range: .week, threshold: 3, now: now, calendar: calendar)
+        XCTAssertEqual(week.dayScores.count, 7)
+        XCTAssertEqual(week.dayScores.last?.score, 100)
+        let twoDaysAgo = week.dayScores.first { $0.day == calendar.date(from: DateComponents(year: 2024, month: 3, day: 8)) }
+        XCTAssertNotNil(twoDaysAgo)
+        XCTAssertNil(twoDaysAgo?.score)
+        XCTAssertTrue(week.lanes.isEmpty)
     }
 }
 
@@ -459,5 +590,232 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(store.pause(id: extra.id, at: start.addingTimeInterval(10)))
         XCTAssertEqual(store.runningCount, 1)
         XCTAssertEqual(store.liveVerdict, .focused)
+    }
+
+    @MainActor
+    func testFocusKeepsOnlyOneThread() throws {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = makeStore(now: start)
+        let a = try XCTUnwrap(store.addTask(title: "甲", at: start))
+        let b = try XCTUnwrap(store.addTask(title: "乙", at: start))
+        let c = try XCTUnwrap(store.addTask(title: "丙", at: start))
+        store.pause(id: c.id, at: start.addingTimeInterval(10))
+
+        // Focus a paused task: it resumes, the others pause.
+        XCTAssertTrue(store.focus(id: c.id, at: start.addingTimeInterval(60)))
+        XCTAssertEqual(store.runningTasks.map(\.id), [c.id])
+        XCTAssertTrue(store.tasks.first { $0.id == a.id }!.isPaused)
+        XCTAssertEqual(store.tasks.first { $0.id == b.id }!.duration(asOf: start.addingTimeInterval(999)), 60, accuracy: 0.001)
+
+        store.complete(id: a.id, at: start.addingTimeInterval(70))
+        XCTAssertFalse(store.focus(id: a.id))
+    }
+
+    @MainActor
+    func testActionsStampWallClockNotFrozenNow() throws {
+        // The observable clock is frozen while the menu panel is open; an
+        // action taken then must still be stamped with the real time.
+        let stale = Date().addingTimeInterval(-600)
+        let store = makeStore(now: stale)
+        let task = try XCTUnwrap(store.addTask(title: "晚点开始"))
+        XCTAssertEqual(task.createdAt.timeIntervalSinceNow, 0, accuracy: 5)
+    }
+
+    @MainActor
+    func testCompletedTodayAndSuggestions() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let morning = calendar.date(from: DateComponents(year: 2024, month: 5, day: 2, hour: 9))!
+        let store = makeStore(now: morning)
+        let old = try XCTUnwrap(store.addTask(title: "写周报 #工作", at: morning.addingTimeInterval(-86_400)))
+        store.complete(id: old.id, at: morning.addingTimeInterval(-80_000))
+        let done = try XCTUnwrap(store.addTask(title: "回邮件", at: morning))
+        store.complete(id: done.id, at: morning.addingTimeInterval(600))
+        _ = store.addTask(title: "改bug", at: morning.addingTimeInterval(700))
+        let again = try XCTUnwrap(store.addTask(title: "回邮件", at: morning.addingTimeInterval(800)))
+        store.complete(id: again.id, at: morning.addingTimeInterval(900))
+
+        XCTAssertEqual(store.completedToday(calendar: calendar).map(\.id), [again.id, done.id])
+        // Newest first, deduped, open tasks (改bug) excluded, tags restored.
+        XCTAssertEqual(store.suggestions(), ["回邮件", "写周报 #工作"])
+        XCTAssertEqual(store.suggestions(matching: "周报"), ["写周报 #工作"])
+        XCTAssertEqual(store.suggestions(matching: "回邮件"), [])
+    }
+
+    @MainActor
+    func testReportCacheKeepsRangesApart() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = makeStore(now: start)
+        _ = store.addTask(title: "写方案", at: start)
+        let cache = ReportCache()
+        _ = cache.report(store: store, range: .today)
+        _ = cache.report(store: store, range: .week)
+        _ = cache.report(store: store, range: .today)
+        _ = cache.report(store: store, range: .week)
+        XCTAssertEqual(cache.computations, 2)
+    }
+}
+
+final class ScheduleTests: XCTestCase {
+    private var directory: URL!
+    private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+    override func setUp() {
+        super.setUp()
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("itimer-schedule-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: directory)
+        super.tearDown()
+    }
+
+    @MainActor
+    private final class ReminderRecorder: ScheduleReminding {
+        var last: [PlannedReminder] = []
+        func reconcile(_ reminders: [PlannedReminder]) { last = reminders }
+    }
+
+    @MainActor
+    private func makeStore(now: Date) -> TaskStore {
+        TaskStore(url: directory.appendingPathComponent("state.json"), now: now)
+    }
+
+    @MainActor
+    func testScheduleDoesNotStartOnItsOwn() throws {
+        let store = makeStore(now: t0)
+        let start = t0.addingTimeInterval(3600)
+        let item = try XCTUnwrap(store.addSchedule(title: "写方案 #工作", start: start, plannedDuration: 7200, reminderLead: 300))
+        XCTAssertEqual(item.tags, ["工作"])
+        XCTAssertTrue(item.isPending)
+        XCTAssertFalse(item.isPaused)
+        XCTAssertEqual(store.upcomingSchedules.map(\.id), [item.id])
+        XCTAssertTrue(store.dueSchedules.isEmpty)
+        XCTAssertTrue(store.pausedTasks.isEmpty)
+        XCTAssertEqual(store.runningCount, 0)
+
+        XCTAssertEqual(store.statusLabel, "")
+
+        // Start time passes (reload with a later clock): due, still not timing.
+        let later = TaskStore(url: store.url, now: start.addingTimeInterval(600))
+        XCTAssertEqual(later.dueSchedules.map(\.id), [item.id])
+        XCTAssertTrue(later.upcomingSchedules.isEmpty)
+        XCTAssertEqual(later.runningCount, 0)
+        XCTAssertEqual(later.tasks[0].duration(asOf: later.now), 0)
+        XCTAssertEqual(later.statusLabel, "待开始 1")
+        XCTAssertFalse(later.pause(id: item.id))
+
+        // Explicit start begins timing at the moment of the click.
+        XCTAssertTrue(later.resume(id: item.id, at: start.addingTimeInterval(600)))
+        XCTAssertEqual(later.runningCount, 1)
+        XCTAssertTrue(later.dueSchedules.isEmpty)
+        XCTAssertEqual(later.tasks[0].duration(asOf: start.addingTimeInterval(1200)), 600, accuracy: 0.001)
+
+        let reloaded = TaskStore(url: store.url, now: start.addingTimeInterval(1200))
+        XCTAssertEqual(reloaded.tasks, later.tasks)
+    }
+
+    @MainActor
+    func testTimingRunsPastEstimate() throws {
+        let store = makeStore(now: t0)
+        let item = try XCTUnwrap(store.addSchedule(title: "以为两小时", start: t0, plannedDuration: 7200, reminderLead: nil))
+        store.resume(id: item.id, at: t0)
+        let later = t0.addingTimeInterval(4 * 3600)
+        let running = store.tasks[0]
+        XCTAssertTrue(running.isRunning)
+        XCTAssertEqual(running.remaining(asOf: t0.addingTimeInterval(3600)) ?? 0, 3600, accuracy: 0.001)
+        XCTAssertFalse(running.isOvertime(asOf: t0.addingTimeInterval(7200)))
+        XCTAssertEqual(running.overtime(asOf: later), 7200, accuracy: 0.001)
+        XCTAssertTrue(store.complete(id: item.id, at: later))
+        XCTAssertEqual(store.tasks[0].duration(asOf: later), 4 * 3600, accuracy: 0.001)
+
+        let stats = EstimateStats.of(store.tasks, asOf: later, within: DateInterval(start: t0, end: later))
+        XCTAssertEqual(stats.count, 1)
+        XCTAssertEqual(stats.overrunCount, 1)
+        XCTAssertEqual(stats.ratio, 2, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testUpdateSchedulePinsStartOnceRunning() throws {
+        let store = makeStore(now: t0)
+        let item = try XCTUnwrap(store.addSchedule(title: "会", start: t0, plannedDuration: 1800, reminderLead: 0))
+        let moved = t0.addingTimeInterval(900)
+        XCTAssertTrue(store.updateSchedule(id: item.id, start: moved, plannedDuration: 3600, reminderLead: nil))
+        XCTAssertEqual(store.tasks[0].scheduledStart, moved)
+        XCTAssertEqual(store.tasks[0].plannedDuration, 3600)
+        XCTAssertNil(store.tasks[0].reminderLead)
+
+        store.resume(id: item.id, at: moved)
+        XCTAssertTrue(store.updateSchedule(id: item.id, start: t0, plannedDuration: 7200, reminderLead: nil))
+        XCTAssertEqual(store.tasks[0].scheduledStart, moved)
+        XCTAssertEqual(store.tasks[0].plannedDuration, 7200)
+    }
+
+    @MainActor
+    func testReminderPlanFollowsLifecycle() throws {
+        let store = makeStore(now: t0)
+        let recorder = ReminderRecorder()
+        store.reminders = recorder
+        let start = t0.addingTimeInterval(3600)
+        let item = try XCTUnwrap(store.addSchedule(title: "写方案", start: start, plannedDuration: 1800, reminderLead: 600))
+        XCTAssertEqual(recorder.last.map(\.kind), [.advance, .due])
+        XCTAssertEqual(recorder.last.map(\.fireAt), [start.addingTimeInterval(-600), start])
+
+        // Snoozing moves both.
+        store.postpone(id: item.id, by: 7200, at: t0)
+        XCTAssertEqual(recorder.last.last?.fireAt, t0.addingTimeInterval(7200))
+
+        // Started: advance/due go away, overtime lands when the estimate runs out.
+        let clicked = t0.addingTimeInterval(7300)
+        store.resume(id: item.id, at: clicked)
+        XCTAssertEqual(recorder.last.map(\.kind), [.overtime])
+        XCTAssertEqual(recorder.last[0].fireAt.timeIntervalSince(clicked), 1800, accuracy: 0.001)
+
+        // Paused: nothing pending. Done: nothing pending.
+        store.pause(id: item.id, at: clicked.addingTimeInterval(60))
+        XCTAssertTrue(recorder.last.isEmpty)
+        store.resume(id: item.id, at: clicked.addingTimeInterval(120))
+        XCTAssertEqual(recorder.last[0].fireAt.timeIntervalSince(clicked), 1860, accuracy: 0.001)
+        store.complete(id: item.id, at: clicked.addingTimeInterval(200))
+        XCTAssertTrue(recorder.last.isEmpty)
+    }
+
+    func testReminderPlanSkipsDisabledAndPast() {
+        let silent = TaskItem(title: "安静", createdAt: t0, scheduledStart: t0.addingTimeInterval(600), plannedDuration: 600, reminderLead: nil)
+        let atTime = TaskItem(title: "准时", createdAt: t0, scheduledStart: t0.addingTimeInterval(600), reminderLead: 0)
+        let lateLead = TaskItem(title: "来不及提前", createdAt: t0, scheduledStart: t0.addingTimeInterval(120), reminderLead: 300)
+        let plan = ReminderPlan.reminders(for: [silent, atTime, lateLead], asOf: t0)
+        XCTAssertEqual(plan.map(\.taskID), [atTime.id, lateLead.id])
+        XCTAssertEqual(plan.map(\.kind), [.due, .due])
+    }
+
+    func testCalendarRangeUsesPlanThenActual() {
+        var item = TaskItem(title: "排期", createdAt: t0, scheduledStart: t0.addingTimeInterval(3600), plannedDuration: 5400)
+        XCTAssertEqual(item.calendarRange(asOf: t0), DateInterval(start: t0.addingTimeInterval(3600), duration: 5400))
+        item.segments = [TimeSegment(startedAt: t0.addingTimeInterval(4000))]
+        XCTAssertEqual(item.calendarRange(asOf: t0.addingTimeInterval(5000)), DateInterval(start: t0.addingTimeInterval(4000), duration: 1000))
+    }
+
+    func testLegacyTasksDecodeWithoutScheduleFields() throws {
+        let json = #"{"id":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","title":"旧任务","createdAt":"2023-11-14T22:13:20Z","segments":[{"startedAt":"2023-11-14T22:13:20Z"}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let task = try decoder.decode(TaskItem.self, from: Data(json.utf8))
+        XCTAssertNil(task.scheduledStart)
+        XCTAssertNil(task.plannedDuration)
+        XCTAssertTrue(task.isRunning)
+        XCTAssertFalse(task.isPending)
+    }
+
+    func testSuggestedStartRoundsToQuarterHour() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let base = calendar.date(from: DateComponents(year: 2026, month: 9, day: 28, hour: 14, minute: 7, second: 30))!
+        let suggested = ScheduleOptions.suggestedStart(after: base, calendar: calendar)
+        XCTAssertEqual(calendar.dateComponents([.hour, .minute, .second], from: suggested), DateComponents(hour: 14, minute: 15, second: 0))
+        let late = calendar.date(from: DateComponents(year: 2026, month: 9, day: 28, hour: 14, minute: 56))!
+        XCTAssertEqual(calendar.dateComponents([.hour, .minute], from: ScheduleOptions.suggestedStart(after: late, calendar: calendar)), DateComponents(hour: 15, minute: 15))
     }
 }
