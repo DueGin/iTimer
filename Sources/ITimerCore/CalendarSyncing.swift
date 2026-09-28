@@ -11,8 +11,9 @@ public enum CalendarAvailability: Equatable, Sendable {
 @MainActor
 public protocol TaskCalendarSyncing: AnyObject {
     var availability: CalendarAvailability { get }
-    /// Create or update the event for this task; returns the event identifier.
-    func upsert(task: TaskItem, asOf now: Date) -> String?
+    /// Create (eventID nil) or update one of this task's events so it covers
+    /// `range`; returns the event identifier, nil on failure.
+    func upsert(task: TaskItem, range: DateInterval, eventID: String?) -> String?
     func remove(eventID: String)
     /// Ask the system for write access.
     func requestAccess() async -> Bool

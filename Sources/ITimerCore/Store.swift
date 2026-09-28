@@ -389,8 +389,8 @@ public final class TaskStore {
     public func delete(id: UUID) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
         let removed = tasks.remove(at: index)
-        if calendarSyncEnabled, let syncer, let eventID = removed.calendarEventID {
-            syncer.remove(eventID: eventID)
+        if calendarSyncEnabled, let syncer {
+            removed.calendarEventIDs.forEach(syncer.remove(eventID:))
         }
         save()
         return true
@@ -415,17 +415,22 @@ public final class TaskStore {
     private func syncTask(id: UUID) {
         guard calendarSyncEnabled, let syncer, let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         // Nothing to place on a calendar until it has a time.
-        if tasks[index].isUndated {
-            if let eventID = tasks[index].calendarEventID {
-                syncer.remove(eventID: eventID)
-                tasks[index].calendarEventID = nil
-                save()
-            }
-            return
+        let ranges = tasks[index].isUndated ? [] : tasks[index].calendarRanges(asOf: now)
+        let existing = tasks[index].calendarEventIDs
+        var ids: [String] = []
+        for (offset, range) in ranges.enumerated() {
+            let current = offset < existing.count ? existing[offset] : nil
+            guard let id = syncer.upsert(task: tasks[index], range: range, eventID: current) else { break }
+            ids.append(id)
         }
-        guard let eventID = syncer.upsert(task: tasks[index], asOf: now) else { return }
-        if tasks[index].calendarEventID != eventID {
-            tasks[index].calendarEventID = eventID
+        if ids.count == ranges.count {
+            existing.dropFirst(ranges.count).forEach(syncer.remove(eventID:))
+        } else {
+            // A write failed: keep the old ids so the next sync can retry them.
+            ids += existing.dropFirst(ids.count)
+        }
+        if tasks[index].calendarEventIDs != ids {
+            tasks[index].calendarEventIDs = ids
             save()
         }
     }

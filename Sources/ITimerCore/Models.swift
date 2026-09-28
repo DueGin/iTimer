@@ -74,8 +74,9 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     public var segments: [TimeSegment]
     public var completedAt: Date?
     public var tags: [String]
-    /// Identifier of the matching event in the local calendar, once synced.
-    public var calendarEventID: String?
+    /// Identifiers of the matching events in the local calendar, aligned
+    /// with `calendarRanges(asOf:)` — one per stretch of actual timing.
+    public var calendarEventIDs: [String]
     /// Planned start. Scheduled items stay idle (no segments) until the user
     /// explicitly starts them, even after this time has passed.
     public var scheduledStart: Date?
@@ -92,7 +93,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments: [TimeSegment] = [],
         completedAt: Date? = nil,
         tags: [String] = [],
-        calendarEventID: String? = nil,
+        calendarEventIDs: [String] = [],
         scheduledStart: Date? = nil,
         plannedDuration: TimeInterval? = nil,
         reminderLead: TimeInterval? = nil
@@ -103,15 +104,20 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         self.segments = segments
         self.completedAt = completedAt
         self.tags = tags
-        self.calendarEventID = calendarEventID
+        self.calendarEventIDs = calendarEventIDs
         self.scheduledStart = scheduledStart
         self.plannedDuration = plannedDuration
         self.reminderLead = reminderLead
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, segments, completedAt, tags, calendarEventID
+        case id, title, createdAt, segments, completedAt, tags, calendarEventIDs
         case scheduledStart, plannedDuration, reminderLead
+    }
+
+    /// Pre-1.4.2 single event id; read once and folded into `calendarEventIDs`.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case calendarEventID
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,7 +128,12 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments = try container.decode([TimeSegment].self, forKey: .segments)
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
-        calendarEventID = try container.decodeIfPresent(String.self, forKey: .calendarEventID)
+        if let ids = try container.decodeIfPresent([String].self, forKey: .calendarEventIDs) {
+            calendarEventIDs = ids
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            calendarEventIDs = try legacy.decodeIfPresent(String.self, forKey: .calendarEventID).map { [$0] } ?? []
+        }
         scheduledStart = try container.decodeIfPresent(Date.self, forKey: .scheduledStart)
         plannedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .plannedDuration)
         reminderLead = try container.decodeIfPresent(TimeInterval.self, forKey: .reminderLead)
@@ -169,19 +180,28 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         overtime(asOf: now) > 0
     }
 
-    /// Calendar placement: actual time once started, the plan before that.
-    public func calendarRange(asOf now: Date) -> DateInterval {
-        let start: Date
-        var end: Date
-        if let first = segments.first {
-            start = first.startedAt
-            end = segments.last?.endedAt ?? completedAt ?? now
-        } else {
-            start = scheduledStart ?? createdAt
-            end = start.addingTimeInterval(plannedDuration ?? 30 * 60)
+    /// Calendar placement: the plan before starting, then one range per
+    /// stretch of actual timing — paused time is left out. Gaps under a
+    /// minute are bridged so quick pause/resume taps don't litter the calendar.
+    public func calendarRanges(asOf now: Date) -> [DateInterval] {
+        guard !segments.isEmpty else {
+            let start = scheduledStart ?? createdAt
+            return [Self.calendarRange(start: start, end: start.addingTimeInterval(plannedDuration ?? 30 * 60))]
         }
-        if end <= start { end = start.addingTimeInterval(60) }
-        return DateInterval(start: start, end: end)
+        var spans: [(start: Date, end: Date)] = []
+        for segment in segments {
+            let end = segment.endedAt ?? completedAt ?? now
+            if let last = spans.last, segment.startedAt.timeIntervalSince(last.end) < 60 {
+                spans[spans.count - 1].end = max(last.end, end)
+            } else {
+                spans.append((segment.startedAt, end))
+            }
+        }
+        return spans.map { Self.calendarRange(start: $0.start, end: $0.end) }
+    }
+
+    private static func calendarRange(start: Date, end: Date) -> DateInterval {
+        DateInterval(start: start, end: end > start ? end : start.addingTimeInterval(60))
     }
 
     public func duration(asOf now: Date) -> TimeInterval {

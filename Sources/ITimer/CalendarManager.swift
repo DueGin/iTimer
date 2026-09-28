@@ -27,23 +27,28 @@ final class EventKitSync: TaskCalendarSyncing {
         }
     }
 
-    func upsert(task: TaskItem, asOf now: Date) -> String? {
+    func upsert(task: TaskItem, range: DateInterval, eventID: String?) -> String? {
         guard let target = targetCalendar() else { return nil }
         let event: EKEvent
-        if let id = task.calendarEventID, let existing = eventStore.event(withIdentifier: id) {
+        if let eventID, let existing = eventStore.event(withIdentifier: eventID) {
             event = existing
         } else {
             event = EKEvent(eventStore: eventStore)
             event.calendar = target
         }
-        event.title = task.title
-        // Planned slot until started, then the real time actually spent.
-        let range = task.calendarRange(asOf: now)
-        event.startDate = range.start
-        event.endDate = range.end
         let tagLine = task.tags.isEmpty ? "" : "#" + task.tags.joined(separator: " #") + "\n"
         let planLine = task.plannedDuration.map { "预计 \(DurationFormat.prose($0))\n" } ?? ""
-        event.notes = tagLine + planLine + "iTimer"
+        let notes = tagLine + planLine + "iTimer"
+        // The running refresh re-pushes every range each minute; skip the
+        // write when this one (e.g. an earlier, closed stretch) is unchanged.
+        if event.eventIdentifier != nil, event.title == task.title, event.startDate == range.start,
+           event.endDate == range.end, event.notes == notes {
+            return event.eventIdentifier
+        }
+        event.title = task.title
+        event.startDate = range.start
+        event.endDate = range.end
+        event.notes = notes
         do {
             try eventStore.save(event, span: .thisEvent, commit: true)
             return event.eventIdentifier

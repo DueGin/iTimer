@@ -460,17 +460,15 @@ final class StoreTests: XCTestCase {
     @MainActor
     func testCalendarSyncLifecycle() {
         final class Recorder: TaskCalendarSyncing {
-            struct Call: Equatable { var title: String; var start: Date; var end: Date }
+            struct Call: Equatable { var title: String; var start: Date; var end: Date; var eventID: String? }
             var availability: CalendarAvailability { .granted("iTimer") }
             var upserts: [Call] = []
             var removed: [String] = []
             var nextID = 0
             func requestAccess() async -> Bool { true }
-            func upsert(task: TaskItem, asOf now: Date) -> String? {
-                let start = task.segments.first?.startedAt ?? task.createdAt
-                let end = task.segments.last?.endedAt ?? now
-                upserts.append(Call(title: task.title, start: start, end: end))
-                if let existing = task.calendarEventID { return existing }
+            func upsert(task: TaskItem, range: DateInterval, eventID: String?) -> String? {
+                upserts.append(Call(title: task.title, start: range.start, end: range.end, eventID: eventID))
+                if let eventID { return eventID }
                 nextID += 1
                 return "evt-\(nextID)"
             }
@@ -491,29 +489,33 @@ final class StoreTests: XCTestCase {
         let task = store.addTask(title: "写方案 #工作", at: start)!
         XCTAssertEqual(recorder.upserts.count, 1)
         XCTAssertEqual(recorder.upserts[0].title, "写方案")
-        XCTAssertEqual(store.tasks[0].calendarEventID, "evt-1")
+        XCTAssertEqual(store.tasks[0].calendarEventIDs, ["evt-1"])
 
         // pause closes the event at pause time
         store.pause(id: task.id, at: start.addingTimeInterval(90))
         XCTAssertEqual(recorder.upserts.last?.end, start.addingTimeInterval(90))
-        XCTAssertEqual(store.tasks[0].calendarEventID, "evt-1")
+        XCTAssertEqual(store.tasks[0].calendarEventIDs, ["evt-1"])
 
-        // resume extends the same event
+        // resume opens a second event; the paused gap stays off the calendar
         store.resume(id: task.id, at: start.addingTimeInterval(200))
-        XCTAssertEqual(recorder.upserts.count, 3)
+        XCTAssertEqual(store.tasks[0].calendarEventIDs, ["evt-1", "evt-2"])
+        XCTAssertEqual(recorder.upserts.last?.start, start.addingTimeInterval(200))
+        XCTAssertEqual(recorder.upserts.last?.eventID, nil)
 
-        // complete finalizes the end
+        // complete finalizes the end of the last stretch; the first keeps its end
         store.complete(id: task.id, at: start.addingTimeInterval(260))
-        XCTAssertEqual(recorder.upserts.last?.end, start.addingTimeInterval(260))
+        let final = recorder.upserts.suffix(2)
+        XCTAssertEqual(final.map(\.eventID), ["evt-1", "evt-2"])
+        XCTAssertEqual(final.map(\.end), [start.addingTimeInterval(90), start.addingTimeInterval(260)])
 
-        // rename re-pushes title on the same event
+        // rename re-pushes title on both events
         store.rename(id: task.id, title: "改名了")
-        XCTAssertEqual(recorder.upserts.last?.title, "改名了")
-        XCTAssertEqual(store.tasks[0].calendarEventID, "evt-1")
+        XCTAssertEqual(recorder.upserts.suffix(2).map(\.title), ["改名了", "改名了"])
+        XCTAssertEqual(store.tasks[0].calendarEventIDs, ["evt-1", "evt-2"])
 
-        // delete removes the event
+        // delete removes every event
         store.delete(id: task.id)
-        XCTAssertEqual(recorder.removed, ["evt-1"])
+        XCTAssertEqual(recorder.removed, ["evt-1", "evt-2"])
     }
 
     @MainActor
@@ -724,7 +726,7 @@ final class ScheduleTests: XCTestCase {
             var upserts = 0
             var removed: [String] = []
             func requestAccess() async -> Bool { true }
-            func upsert(task: TaskItem, asOf now: Date) -> String? { upserts += 1; return "evt" }
+            func upsert(task: TaskItem, range: DateInterval, eventID: String?) -> String? { upserts += 1; return "evt" }
             func remove(eventID: String) { removed.append(eventID) }
         }
         let store = makeStore(now: t0)
@@ -754,7 +756,7 @@ final class ScheduleTests: XCTestCase {
         XCTAssertTrue(store.updateSchedule(id: item.id, start: nil, plannedDuration: 3600, reminderLead: 0))
         XCTAssertTrue(store.tasks[0].isUndated)
         XCTAssertNil(store.tasks[0].reminderLead)
-        XCTAssertNil(store.tasks[0].calendarEventID)
+        XCTAssertTrue(store.tasks[0].calendarEventIDs.isEmpty)
         XCTAssertEqual(recorder.removed, ["evt"])
 
         // Starting by hand works like any schedule.
@@ -839,9 +841,31 @@ final class ScheduleTests: XCTestCase {
 
     func testCalendarRangeUsesPlanThenActual() {
         var item = TaskItem(title: "排期", createdAt: t0, scheduledStart: t0.addingTimeInterval(3600), plannedDuration: 5400)
-        XCTAssertEqual(item.calendarRange(asOf: t0), DateInterval(start: t0.addingTimeInterval(3600), duration: 5400))
+        XCTAssertEqual(item.calendarRanges(asOf: t0), [DateInterval(start: t0.addingTimeInterval(3600), duration: 5400)])
         item.segments = [TimeSegment(startedAt: t0.addingTimeInterval(4000))]
-        XCTAssertEqual(item.calendarRange(asOf: t0.addingTimeInterval(5000)), DateInterval(start: t0.addingTimeInterval(4000), duration: 1000))
+        XCTAssertEqual(item.calendarRanges(asOf: t0.addingTimeInterval(5000)), [DateInterval(start: t0.addingTimeInterval(4000), duration: 1000)])
+    }
+
+    func testCalendarRangesLeaveOutPausedTime() {
+        let item = TaskItem(title: "断断续续", createdAt: t0, segments: [
+            TimeSegment(startedAt: t0, endedAt: t0.addingTimeInterval(600)),
+            // 30s break: bridged into the first stretch
+            TimeSegment(startedAt: t0.addingTimeInterval(630), endedAt: t0.addingTimeInterval(1200)),
+            // an hour's pause: its own event
+            TimeSegment(startedAt: t0.addingTimeInterval(4800)),
+        ])
+        XCTAssertEqual(item.calendarRanges(asOf: t0.addingTimeInterval(5400)), [
+            DateInterval(start: t0, duration: 1200),
+            DateInterval(start: t0.addingTimeInterval(4800), duration: 600),
+        ])
+    }
+
+    func testLegacySingleCalendarEventIDMigrates() throws {
+        let json = #"{"id":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","title":"旧任务","createdAt":"2023-11-14T22:13:20Z","segments":[],"calendarEventID":"evt-old"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let task = try decoder.decode(TaskItem.self, from: Data(json.utf8))
+        XCTAssertEqual(task.calendarEventIDs, ["evt-old"])
     }
 
     func testLegacyTasksDecodeWithoutScheduleFields() throws {
