@@ -144,8 +144,15 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// Pending and its start time has arrived — waiting for the user to start it.
+    /// Undated schedules are never due; they wait until given a time or started.
     public func isDue(asOf now: Date) -> Bool {
-        isPending && (scheduledStart ?? createdAt) <= now
+        guard isPending, let start = scheduledStart else { return false }
+        return start <= now
+    }
+
+    /// A schedule written down without a time yet (时间待定).
+    public var isUndated: Bool {
+        isPending && scheduledStart == nil
     }
 
     /// Time left before the estimate runs out; nil without an estimate.

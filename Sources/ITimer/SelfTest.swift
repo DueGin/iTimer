@@ -264,6 +264,15 @@ enum SelfTest {
             return false
         }
         note("due schedule waits for start; running schedule in overtime")
+        guard let undated = store.addSchedule(title: "接入 AI #想法", start: nil, plannedDuration: 7200, reminderLead: 300),
+              undated.isUndated, undated.reminderLead == nil,
+              store.undatedSchedules.contains(where: { $0.id == undated.id }),
+              !store.dueSchedules.contains(where: { $0.id == undated.id }),
+              store.upcomingSchedules.count == 1 else {
+            note("undated schedule misplaced")
+            return false
+        }
+        note("undated schedule waits in 时间待定 without reminder")
         render(MenuBarView(store: store), size: NSSize(width: 380, height: 640), to: "/tmp/itimer-schedule-popup.png")
         var draft = ScheduleDraft.new(title: "准备季度汇报 #工作", asOf: now)
         render(
@@ -275,6 +284,29 @@ enum SelfTest {
             .padding(16),
             size: NSSize(width: 380, height: 420),
             to: "/tmp/itimer-composer.png"
+        )
+        render(
+            ScheduleComposer(
+                draft: Binding(get: { draft }, set: { draft = $0 }),
+                now: now,
+                onSave: {}, onStartNow: {}, onCancel: {},
+                dayListOpen: true
+            )
+            .padding(16),
+            size: NSSize(width: 380, height: 520),
+            to: "/tmp/itimer-composer-days.png"
+        )
+        var pending = ScheduleDraft.new(title: "接入 AI #想法", asOf: now)
+        pending.hasTime = false
+        render(
+            ScheduleComposer(
+                draft: Binding(get: { pending }, set: { pending = $0 }),
+                now: now,
+                onSave: {}, onStartNow: {}, onCancel: {}
+            )
+            .padding(16),
+            size: NSSize(width: 380, height: 340),
+            to: "/tmp/itimer-composer-undated.png"
         )
         return true
     }

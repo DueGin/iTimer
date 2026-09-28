@@ -101,7 +101,12 @@ public final class TaskStore {
 
     /// Schedules still in the future.
     public var upcomingSchedules: [TaskItem] {
-        tasks.filter { $0.isPending && !$0.isDue(asOf: now) }.sorted(by: Self.byScheduledStart)
+        tasks.filter { $0.isPending && $0.scheduledStart != nil && !$0.isDue(asOf: now) }.sorted(by: Self.byScheduledStart)
+    }
+
+    /// Schedules without a time yet, oldest first.
+    public var undatedSchedules: [TaskItem] {
+        tasks.filter(\.isUndated).sorted { $0.createdAt < $1.createdAt }
     }
 
     private static func byScheduledStart(_ lhs: TaskItem, _ rhs: TaskItem) -> Bool {
@@ -256,10 +261,11 @@ public final class TaskStore {
 
     /// Add a schedule. It does not start timing — not even once its start
     /// time passes; the user starts it explicitly via `resume(id:)`.
+    /// `start` nil = time to be decided; such a schedule has no reminder.
     @discardableResult
     public func addSchedule(
         title: String,
-        start: Date,
+        start: Date?,
         plannedDuration: TimeInterval?,
         reminderLead: TimeInterval?,
         at now: Date? = nil
@@ -273,7 +279,7 @@ public final class TaskStore {
             tags: parsed.tags,
             scheduledStart: start,
             plannedDuration: plannedDuration.map { max(60, $0) },
-            reminderLead: reminderLead.map { max(0, $0) }
+            reminderLead: start == nil ? nil : reminderLead.map { max(0, $0) }
         )
         tasks.insert(task, at: 0)
         save()
@@ -286,7 +292,7 @@ public final class TaskStore {
     @discardableResult
     public func updateSchedule(
         id: UUID,
-        start: Date,
+        start: Date?,
         plannedDuration: TimeInterval?,
         reminderLead: TimeInterval?
     ) -> Bool {
@@ -295,7 +301,7 @@ public final class TaskStore {
             tasks[index].scheduledStart = start
         }
         tasks[index].plannedDuration = plannedDuration.map { max(60, $0) }
-        tasks[index].reminderLead = reminderLead.map { max(0, $0) }
+        tasks[index].reminderLead = tasks[index].isUndated ? nil : reminderLead.map { max(0, $0) }
         save()
         syncTask(id: id)
         return true
@@ -408,6 +414,15 @@ public final class TaskStore {
 
     private func syncTask(id: UUID) {
         guard calendarSyncEnabled, let syncer, let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        // Nothing to place on a calendar until it has a time.
+        if tasks[index].isUndated {
+            if let eventID = tasks[index].calendarEventID {
+                syncer.remove(eventID: eventID)
+                tasks[index].calendarEventID = nil
+                save()
+            }
+            return
+        }
         guard let eventID = syncer.upsert(task: tasks[index], asOf: now) else { return }
         if tasks[index].calendarEventID != eventID {
             tasks[index].calendarEventID = eventID

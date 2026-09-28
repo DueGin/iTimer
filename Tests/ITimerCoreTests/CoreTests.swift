@@ -718,6 +718,52 @@ final class ScheduleTests: XCTestCase {
     }
 
     @MainActor
+    func testUndatedScheduleWaitsWithoutTime() throws {
+        final class Recorder: TaskCalendarSyncing {
+            var availability: CalendarAvailability { .granted("iTimer") }
+            var upserts = 0
+            var removed: [String] = []
+            func requestAccess() async -> Bool { true }
+            func upsert(task: TaskItem, asOf now: Date) -> String? { upserts += 1; return "evt" }
+            func remove(eventID: String) { removed.append(eventID) }
+        }
+        let store = makeStore(now: t0)
+        let recorder = Recorder()
+        store.syncer = recorder
+        store.setCalendarSyncEnabled(true)
+
+        let item = try XCTUnwrap(store.addSchedule(title: "接入AI", start: nil, plannedDuration: 3600, reminderLead: 300))
+        XCTAssertTrue(item.isUndated)
+        XCTAssertNil(item.reminderLead, "no time, no reminder")
+        XCTAssertEqual(store.undatedSchedules.map(\.id), [item.id])
+        XCTAssertTrue(store.upcomingSchedules.isEmpty)
+        XCTAssertEqual(recorder.upserts, 0, "nothing to put on a calendar yet")
+
+        // Days later it is still waiting, never due, never a reminder.
+        let later = TaskStore(url: store.url, now: t0.addingTimeInterval(3 * 86400))
+        XCTAssertTrue(later.dueSchedules.isEmpty)
+        XCTAssertEqual(later.statusLabel, "")
+        XCTAssertTrue(ReminderPlan.reminders(for: later.tasks, asOf: later.now).isEmpty)
+
+        // Giving it a time turns it into a normal schedule; taking it back removes the event.
+        let slot = t0.addingTimeInterval(7200)
+        XCTAssertTrue(store.updateSchedule(id: item.id, start: slot, plannedDuration: 3600, reminderLead: 0))
+        XCTAssertEqual(store.upcomingSchedules.map(\.id), [item.id])
+        XCTAssertEqual(store.tasks[0].reminderLead, 0)
+        XCTAssertEqual(recorder.upserts, 1)
+        XCTAssertTrue(store.updateSchedule(id: item.id, start: nil, plannedDuration: 3600, reminderLead: 0))
+        XCTAssertTrue(store.tasks[0].isUndated)
+        XCTAssertNil(store.tasks[0].reminderLead)
+        XCTAssertNil(store.tasks[0].calendarEventID)
+        XCTAssertEqual(recorder.removed, ["evt"])
+
+        // Starting by hand works like any schedule.
+        XCTAssertTrue(store.resume(id: item.id, at: t0.addingTimeInterval(60)))
+        XCTAssertEqual(store.runningCount, 1)
+        XCTAssertTrue(store.undatedSchedules.isEmpty)
+    }
+
+    @MainActor
     func testTimingRunsPastEstimate() throws {
         let store = makeStore(now: t0)
         let item = try XCTUnwrap(store.addSchedule(title: "以为两小时", start: t0, plannedDuration: 7200, reminderLead: nil))

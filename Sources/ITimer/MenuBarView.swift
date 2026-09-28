@@ -368,7 +368,8 @@ struct MenuBarView: View {
         let done = store.completedToday()
         let pending = store.tasks.filter(\.isPending)
         let due = pending.filter { $0.isDue(asOf: now) }.sorted { ($0.scheduledStart ?? $0.createdAt) < ($1.scheduledStart ?? $1.createdAt) }
-        let upcoming = pending.filter { !$0.isDue(asOf: now) }.sorted { ($0.scheduledStart ?? $0.createdAt) < ($1.scheduledStart ?? $1.createdAt) }
+        let upcoming = pending.filter { !$0.isDue(asOf: now) && !$0.isUndated }.sorted { ($0.scheduledStart ?? $0.createdAt) < ($1.scheduledStart ?? $1.createdAt) }
+        let undated = store.undatedSchedules
         if store.runningTasks.isEmpty && store.pausedTasks.isEmpty && pending.isEmpty && done.isEmpty {
             Text("没有人生的计时是白费的——输入任务回车立即计时，或点「日程」安排未来的事。结尾加个 #标签，统计会帮你归类。")
                 .font(.callout)
@@ -396,6 +397,10 @@ struct MenuBarView: View {
                     if !upcoming.isEmpty {
                         sectionTitle("接下来", count: upcoming.count)
                         ForEach(upcoming) { task in row(task, now: now) }
+                    }
+                    if !undated.isEmpty {
+                        sectionTitle("时间待定", count: undated.count)
+                        ForEach(undated) { task in row(task, now: now) }
                     }
                     if !done.isEmpty {
                         sectionTitle("今日完成", count: done.count)
@@ -602,11 +607,11 @@ struct MenuBarView: View {
             if store.tasks.first(where: { $0.id == id })?.title != value.title {
                 store.rename(id: id, title: value.title)
             }
-            store.updateSchedule(id: id, start: value.start, plannedDuration: value.duration, reminderLead: value.reminderLead)
+            store.updateSchedule(id: id, start: value.scheduledStart, plannedDuration: value.duration, reminderLead: value.reminderLead)
         } else {
             guard store.addSchedule(
                 title: value.title,
-                start: value.start,
+                start: value.scheduledStart,
                 plannedDuration: value.duration,
                 reminderLead: value.reminderLead
             ) != nil else { return }
@@ -718,7 +723,11 @@ struct TaskRow: View {
 
     @ViewBuilder
     private var trailingLabel: some View {
-        if task.isPending {
+        if task.isUndated {
+            Text("待定")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(.tertiary)
+        } else if task.isPending {
             Text(Self.timeLabel(task.scheduledStart ?? task.createdAt, now: now))
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .monospacedDigit()
@@ -754,6 +763,11 @@ struct TaskRow: View {
 
     private var pendingSummary: String {
         var parts: [String] = []
+        if task.isUndated {
+            parts.append("时间待定")
+            if let planned = task.plannedDuration { parts.append("预计 \(DurationFormat.prose(planned))") }
+            return parts.joined(separator: " · ")
+        }
         if isDue, let start = task.scheduledStart {
             let late = now.timeIntervalSince(start)
             parts.append(late >= 60 ? "已到点 \(DurationFormat.prose(late))" : "到点了")
@@ -834,7 +848,7 @@ struct TaskRow: View {
                 }
             } else {
                 IconButton(
-                    title: task.isPending ? "编辑：名称、时间、预计时长、提醒" : "编辑：名称、预计时长、提醒",
+                    title: task.isUndated ? "编辑：定个时间、预计时长" : task.isPending ? "编辑：名称、时间、预计时长、提醒" : "编辑：名称、预计时长、提醒",
                     systemImage: "slider.horizontal.3",
                     identifier: "edit-schedule-\(task.id.uuidString)",
                     action: onEdit
@@ -859,7 +873,9 @@ struct TaskRow: View {
     private var menuItems: some View {
         if task.isPending {
             Button("开始计时") { store.resume(id: task.id) }
-            Button("推迟 10 分钟") { store.postpone(id: task.id, by: 10 * 60) }
+            if !task.isUndated {
+                Button("推迟 10 分钟") { store.postpone(id: task.id, by: 10 * 60) }
+            }
         } else {
             if canFocus {
                 Button("只做这个（暂停其他）") { store.focus(id: task.id) }
