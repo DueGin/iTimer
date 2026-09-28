@@ -293,8 +293,21 @@ enum SelfTest {
                 dayListOpen: true
             )
             .padding(16),
-            size: NSSize(width: 380, height: 520),
+            size: NSSize(width: 380, height: 560),
             to: "/tmp/itimer-composer-days.png"
+        )
+        var far = ScheduleDraft.new(title: "续签合同", asOf: now)
+        far.start = Calendar.current.date(byAdding: .month, value: 5, to: far.start) ?? far.start
+        render(
+            ScheduleComposer(
+                draft: Binding(get: { far }, set: { far = $0 }),
+                now: now,
+                onSave: {}, onStartNow: {}, onCancel: {},
+                dayListOpen: true
+            )
+            .padding(16),
+            size: NSSize(width: 380, height: 560),
+            to: "/tmp/itimer-composer-far.png"
         )
         var pending = ScheduleDraft.new(title: "接入 AI #想法", asOf: now)
         pending.hasTime = false

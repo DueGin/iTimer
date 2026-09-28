@@ -51,6 +51,8 @@ struct ScheduleComposer: View {
     /// Inline day list. Not a Menu/Picker: those take focus and the
     /// MenuBarExtra panel closes under them.
     @State var dayListOpen = false
+    /// Month the dropdown calendar shows; nil = the picked day's month.
+    @State private var shownMonth: Date?
 
     private var calendar: Calendar { .current }
     private var isNew: Bool { draft.editingID == nil }
@@ -164,6 +166,7 @@ struct ScheduleComposer: View {
             StepButton(systemImage: "chevron.left", help: "前一天") { shiftDay(-1) }
                 .disabled(!draft.hasTime || calendar.isDate(draft.start, inSameDayAs: now) || draft.start < now)
             Button {
+                shownMonth = nil
                 withAnimation(.easeOut(duration: 0.15)) { dayListOpen.toggle() }
             } label: {
                 HStack(spacing: 5) {
@@ -207,59 +210,76 @@ struct ScheduleComposer: View {
             .background(Theme.focused.opacity(0.12), in: Capsule())
     }
 
-    /// Dropdown body: 待定 plus the next two weeks.
+    /// Dropdown body: 待定 and a few shortcuts, then a month calendar that
+    /// pages to any future date.
     private var dayList: some View {
         let today = calendar.startOfDay(for: now)
-        let days = (0..<14).compactMap { calendar.date(byAdding: .day, value: $0, to: today) }
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-            dayChip(title: "待定", subtitle: "先不定时间", selected: !draft.hasTime) { pickUndated() }
-                .accessibilityIdentifier("schedule-day-undated")
-            ForEach(days, id: \.self) { day in
-                dayChip(
-                    title: Self.dayName(day, today: today, calendar: calendar),
-                    subtitle: day.formatted(.dateTime.month(.defaultDigits).day()),
-                    selected: draft.hasTime && calendar.isDate(draft.start, inSameDayAs: day)
-                ) { pick(day) }
+        let month = shownMonth ?? Self.monthStart(draft.hasTime ? draft.start : now, calendar: calendar)
+        return VStack(spacing: 8) {
+            HStack(spacing: 4) {
+                shortcut("待定", selected: !draft.hasTime) { pickUndated() }
+                    .help("先记下，不定日期和时间")
+                    .accessibilityIdentifier("schedule-day-undated")
+                ForEach(shortcuts(today: today), id: \.title) { item in
+                    shortcut(item.title, selected: draft.hasTime && calendar.isDate(draft.start, inSameDayAs: item.day)) {
+                        pick(item.day)
+                    }
+                    .help(item.day.formatted(.dateTime.month(.defaultDigits).day().weekday(.abbreviated)))
+                }
             }
+            MonthGrid(
+                month: month,
+                today: today,
+                selection: draft.hasTime ? draft.start : nil,
+                calendar: calendar,
+                onPage: { offset in
+                    shownMonth = calendar.date(byAdding: .month, value: offset, to: month).map { Self.monthStart($0, calendar: calendar) }
+                },
+                onPick: pick
+            )
         }
         .padding(.leading, 52)
         .padding(.trailing, 12)
-        .padding(.bottom, 8)
+        .padding(.bottom, 10)
         .transition(.opacity)
         .accessibilityIdentifier("schedule-day-list")
     }
 
-    private func dayChip(title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func shortcuts(today: Date) -> [(title: String, day: Date)] {
+        var items: [(String, Date)] = []
+        for (offset, title) in [(0, "今天"), (1, "明天"), (2, "后天")] {
+            if let day = calendar.date(byAdding: .day, value: offset, to: today) { items.append((title, day)) }
+        }
+        // Next Monday, at least three days out so it never repeats the above.
+        if let monday = calendar.nextDate(
+            after: calendar.date(byAdding: .day, value: 2, to: today) ?? today,
+            matching: DateComponents(weekday: 2),
+            matchingPolicy: .nextTime
+        ) {
+            items.append(("下周一", monday))
+        }
+        return items
+    }
+
+    private func shortcut(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 0) {
-                Text(title)
-                    .font(.caption.weight(selected ? .semibold : .medium))
-                Text(subtitle)
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(selected ? Theme.focused : Color.secondary)
-            }
-            .lineLimit(1)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .foregroundStyle(selected ? Theme.focused : Color.primary)
-            .background(
-                selected ? Theme.focused.opacity(0.14) : Color.primary.opacity(0.05),
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-            )
-            .contentShape(Rectangle())
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .medium))
+                .lineLimit(1)
+                .foregroundStyle(selected ? Theme.focused : Color.primary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(
+                    selected ? Theme.focused.opacity(0.14) : Color.primary.opacity(0.05),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    /// 今天 / 明天 / 后天, then the weekday.
-    static func dayName(_ day: Date, today: Date, calendar: Calendar = .current) -> String {
-        switch calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: day)).day {
-        case 0: return "今天"
-        case 1: return "明天"
-        case 2: return "后天"
-        default: return day.formatted(.dateTime.weekday(.abbreviated))
-        }
+    static func monthStart(_ date: Date, calendar: Calendar = .current) -> Date {
+        calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
     }
 
     private var timeControls: some View {
@@ -342,7 +362,9 @@ struct ScheduleComposer: View {
         case 0: return "今天"
         case 1: return "明天"
         case 2: return "后天"
-        default: return nil
+        default:
+            // Far-off dates in another year need the year to be unambiguous.
+            return calendar.isDate(day, equalTo: today, toGranularity: .year) ? nil : "\(calendar.component(.year, from: day))年"
         }
     }
 
@@ -417,6 +439,89 @@ struct ScheduleComposer: View {
         guard let lead else { return "关" }
         if lead <= 0 { return "准时" }
         return "前" + shortDuration(lead)
+    }
+}
+
+/// Month calendar drawn from plain buttons (a graphical DatePicker would
+/// not match the panel and cannot grey out past days). Weeks start on the
+/// system's first weekday.
+private struct MonthGrid: View {
+    var month: Date
+    var today: Date
+    var selection: Date?
+    var calendar: Calendar
+    var onPage: (Int) -> Void
+    var onPick: (Date) -> Void
+
+    private var days: [Date?] {
+        guard let range = calendar.range(of: .day, in: .month, for: month) else { return [] }
+        let lead = (calendar.component(.weekday, from: month) - calendar.firstWeekday + 7) % 7
+        let dates = range.compactMap { calendar.date(byAdding: .day, value: $0 - 1, to: month) }
+        return Array(repeating: nil, count: lead) + dates
+    }
+
+    private var weekdaySymbols: [String] {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let first = calendar.firstWeekday - 1
+        return Array(symbols[first...] + symbols[..<first])
+    }
+
+    private var canGoBack: Bool {
+        month > ScheduleComposer.monthStart(today, calendar: calendar)
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text(month, format: .dateTime.year().month(.wide))
+                    .font(.callout.weight(.semibold))
+                    .monospacedDigit()
+                Spacer()
+                StepButton(systemImage: "chevron.left", help: "上个月") { onPage(-1) }
+                    .disabled(!canGoBack)
+                StepButton(systemImage: "chevron.right", help: "下个月") { onPage(1) }
+            }
+            .padding(.bottom, 2)
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 7)
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                    Text(symbol)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                ForEach(Array(days.enumerated()), id: \.offset) { _, day in
+                    if let day {
+                        cell(day)
+                    } else {
+                        Color.clear.frame(height: 24)
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("schedule-month")
+    }
+
+    private func cell(_ day: Date) -> some View {
+        let past = day < today
+        let selected = selection.map { calendar.isDate($0, inSameDayAs: day) } ?? false
+        let isToday = calendar.isDate(day, inSameDayAs: today)
+        return Button { onPick(day) } label: {
+            Text("\(calendar.component(.day, from: day))")
+                .font(.caption.weight(selected || isToday ? .semibold : .regular))
+                .monospacedDigit()
+                .foregroundStyle(selected ? Color.white : (past ? Color.secondary.opacity(0.45) : (isToday ? Theme.focused : Color.primary)))
+                .frame(maxWidth: .infinity, minHeight: 24)
+                .background {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.focused)
+                    } else if isToday {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.focused.opacity(0.5), lineWidth: 1)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(past)
     }
 }
 
