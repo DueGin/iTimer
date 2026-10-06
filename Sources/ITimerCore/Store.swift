@@ -741,12 +741,7 @@ public final class TaskStore {
     /// Lays the canvas out in columns by dependency depth.
     public func arrangeWorkflow(id: UUID) {
         guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
-        let positions = workflows[index].arranged()
-        for node in workflows[index].nodes.indices {
-            guard let point = positions[workflows[index].nodes[node].taskID] else { continue }
-            workflows[index].nodes[node].x = point.x
-            workflows[index].nodes[node].y = point.y
-        }
+        workflows[index].applyArrangement()
         save()
     }
 
