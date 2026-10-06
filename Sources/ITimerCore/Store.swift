@@ -7,23 +7,26 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
     public var tasks: [TaskItem]
     public var calendarSyncEnabled: Bool
     public var collections: [TaskCollection]
+    public var workflows: [Workflow]
 
     public init(
         version: Int = 2,
         brainSplitThreshold: Int,
         tasks: [TaskItem],
         calendarSyncEnabled: Bool = false,
-        collections: [TaskCollection] = []
+        collections: [TaskCollection] = [],
+        workflows: [Workflow] = []
     ) {
         self.version = version
         self.brainSplitThreshold = brainSplitThreshold
         self.tasks = tasks
         self.calendarSyncEnabled = calendarSyncEnabled
         self.collections = collections
+        self.workflows = workflows
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, brainSplitThreshold, tasks, calendarSyncEnabled, collections
+        case version, brainSplitThreshold, tasks, calendarSyncEnabled, collections, workflows
     }
 
     public init(from decoder: Decoder) throws {
@@ -33,6 +36,7 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
         tasks = try container.decode([TaskItem].self, forKey: .tasks)
         calendarSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .calendarSyncEnabled) ?? false
         collections = try container.decodeIfPresent([TaskCollection].self, forKey: .collections) ?? []
+        workflows = try container.decodeIfPresent([Workflow].self, forKey: .workflows) ?? []
     }
 }
 
@@ -40,6 +44,8 @@ public struct DebugLaunch: Codable, Equatable, Sendable {
     public var dataPath: String
     public var resultPath: String
     public var selfTest: Bool
+    /// Which self-test to run; nil = the full panel and window run.
+    public var scenario: String?
 }
 
 public enum DebugLaunchFile {
@@ -62,12 +68,18 @@ public final class TaskStore {
     public private(set) var calendarSyncEnabled: Bool
     /// User-created collections, in display order. Empty until the user makes one.
     public private(set) var collections: [TaskCollection]
+    /// User-created workflow canvases, in sidebar order.
+    public private(set) var workflows: [Workflow]
     public private(set) var now: Date
     public private(set) var lastError: String?
     public let url: URL
 
     /// Calendar writer, injected by the app. Nil in tests unless a fake is set.
     public var syncer: (any TaskCalendarSyncing)?
+
+    /// Told whenever finishing a task moves a workflow along (downstream
+    /// tasks started or now clear to start). Injected by the app.
+    public var onWorkflowAdvance: (@MainActor (WorkflowAdvance) -> Void)?
 
     /// Notification scheduler, injected by the app. Reconciled after every save.
     public var reminders: (any ScheduleReminding)? {
@@ -84,6 +96,7 @@ public final class TaskStore {
         self.brainSplitThreshold = loaded.brainSplitThreshold
         self.calendarSyncEnabled = loaded.calendarSyncEnabled
         self.collections = loaded.collections
+        self.workflows = loaded.workflows
         self.lastError = loaded.error
     }
 
@@ -420,6 +433,7 @@ public final class TaskStore {
         self.now = stamp
         save()
         syncTask(id: id)
+        advanceWorkflow(after: id, at: stamp)
         return true
     }
 
@@ -649,12 +663,237 @@ public final class TaskStore {
         return parent
     }
 
+    // MARK: - Workflows
+
+    public func workflow(id: UUID?) -> Workflow? {
+        guard let id else { return nil }
+        return workflows.first { $0.id == id }
+    }
+
+    /// The workflow a task sits on. A task sits on at most one.
+    public func workflow(containing taskID: UUID) -> Workflow? {
+        workflows.first { $0.contains(taskID) }
+    }
+
+    /// Tasks by id, for reading workflow state.
+    public var tasksByID: [UUID: TaskItem] {
+        Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Where a task stands in its workflow; nil when it is on none.
+    public func workflowState(of taskID: UUID) -> WorkflowNodeState? {
+        workflow(containing: taskID)?.state(of: taskID, tasks: tasksByID)
+    }
+
+    /// Upstream tasks a workflow task is still waiting on.
+    public func workflowBlockers(of taskID: UUID) -> [TaskItem] {
+        guard let workflow = workflow(containing: taskID) else { return [] }
+        let byID = tasksByID
+        return workflow.blockers(of: taskID, tasks: byID).compactMap { byID[$0] }
+    }
+
+    /// Adds an empty canvas. A name already in use gets a number, so a
+    /// quick "new workflow" never fails.
+    @discardableResult
+    public func addWorkflow(_ name: String, at now: Date? = nil) -> Workflow? {
+        let cleaned = Workflow.clean(name)
+        guard !cleaned.isEmpty else { return nil }
+        let taken = Set(workflows.map(\.name))
+        var unique = cleaned
+        var number = 2
+        while taken.contains(unique) {
+            unique = "\(cleaned) \(number)"
+            number += 1
+        }
+        let workflow = Workflow(name: unique, createdAt: now ?? self.now)
+        workflows.append(workflow)
+        save()
+        return workflow
+    }
+
+    @discardableResult
+    public func renameWorkflow(id: UUID, to name: String) -> Bool {
+        let cleaned = Workflow.clean(name)
+        guard !cleaned.isEmpty, let index = workflows.firstIndex(where: { $0.id == id }) else { return false }
+        guard cleaned != workflows[index].name else { return true }
+        workflows[index].name = cleaned
+        save()
+        return true
+    }
+
+    /// Removes the canvas. Its tasks stay, just off any workflow.
+    public func removeWorkflow(id: UUID) {
+        guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
+        workflows.remove(at: index)
+        save()
+    }
+
+    public func moveWorkflow(id: UUID, by offset: Int) {
+        guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard workflows.indices.contains(target) else { return }
+        workflows.swapAt(index, target)
+        save()
+    }
+
+    /// Puts a task on a workflow at a canvas point, or right of the
+    /// rightmost card without one. A task on another workflow leaves it,
+    /// edges and all; on this one it just moves.
+    @discardableResult
+    public func place(taskID: UUID, in workflowID: UUID, x: Double? = nil, y: Double? = nil) -> Bool {
+        guard tasks.contains(where: { $0.id == taskID }),
+              let target = workflows.firstIndex(where: { $0.id == workflowID }) else { return false }
+        if workflows[target].contains(taskID) {
+            guard let x, let y else { return true }
+            return moveNode(taskID: taskID, in: workflowID, x: x, y: y)
+        }
+        for index in workflows.indices where index != target && workflows[index].contains(taskID) {
+            let others = Set(workflows[index].nodes.map(\.taskID)).subtracting([taskID])
+            workflows[index] = workflows[index].pruned(keeping: others)
+        }
+        let slot = workflows[target].nextSlot()
+        workflows[target].nodes.append(WorkflowNode(taskID: taskID, x: x ?? slot.x, y: y ?? slot.y))
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func moveNode(taskID: UUID, in workflowID: UUID, x: Double, y: Double) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }),
+              let node = workflows[index].nodes.firstIndex(where: { $0.taskID == taskID }) else { return false }
+        guard workflows[index].nodes[node].x != x || workflows[index].nodes[node].y != y else { return true }
+        workflows[index].nodes[node].x = x
+        workflows[index].nodes[node].y = y
+        save()
+        return true
+    }
+
+    /// Takes a task off its canvas, with its edges. The task itself stays.
+    @discardableResult
+    public func removeNode(taskID: UUID, from workflowID: UUID) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }),
+              workflows[index].contains(taskID) else { return false }
+        let others = Set(workflows[index].nodes.map(\.taskID)).subtracting([taskID])
+        workflows[index] = workflows[index].pruned(keeping: others)
+        save()
+        return true
+    }
+
+    /// A new step drawn on the canvas: an undated schedule (it waits to be
+    /// started like any other), placed at the point. With `upstream` it is
+    /// wired after that task and filed in the same collection.
+    @discardableResult
+    public func addWorkflowStep(
+        title: String,
+        in workflowID: UUID,
+        x: Double,
+        y: Double,
+        after upstream: UUID? = nil,
+        at now: Date? = nil
+    ) -> TaskItem? {
+        guard workflow(id: workflowID) != nil else { return nil }
+        let collectionID = upstream.flatMap { id in tasks.first { $0.id == id }?.collectionID }
+        guard let task = addSchedule(
+            title: title,
+            collectionID: collectionID,
+            start: nil,
+            plannedDuration: nil,
+            reminderLead: nil,
+            at: now
+        ) else { return nil }
+        place(taskID: task.id, in: workflowID, x: x, y: y)
+        if let upstream {
+            connect(from: upstream, to: task.id, in: workflowID)
+        }
+        return task
+    }
+
+    /// Wires `from` before `to`. Refuses a loop, a repeat, a self-edge, or
+    /// a task that is not on this canvas.
+    @discardableResult
+    public func connect(from: UUID, to: UUID, in workflowID: UUID) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }),
+              workflows[index].canConnect(from: from, to: to) else { return false }
+        workflows[index].edges.append(WorkflowEdge(from: from, to: to))
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func disconnect(from: UUID, to: UUID, in workflowID: UUID) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }) else { return false }
+        let edge = WorkflowEdge(from: from, to: to)
+        guard workflows[index].edges.contains(edge) else { return false }
+        workflows[index].edges.removeAll { $0 == edge }
+        save()
+        return true
+    }
+
+    /// Whether the task starts on its own once its upstream is done.
+    /// Turning it on does not start a task that is already clear.
+    @discardableResult
+    public func setAutoStart(taskID: UUID, in workflowID: UUID, _ on: Bool) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }),
+              let node = workflows[index].nodes.firstIndex(where: { $0.taskID == taskID }) else { return false }
+        guard workflows[index].nodes[node].autoStart != on else { return true }
+        workflows[index].nodes[node].autoStart = on
+        save()
+        return true
+    }
+
+    /// Lays the canvas out in columns by dependency depth.
+    public func arrangeWorkflow(id: UUID) {
+        guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
+        let positions = workflows[index].arranged()
+        for node in workflows[index].nodes.indices {
+            guard let point = positions[workflows[index].nodes[node].taskID] else { continue }
+            workflows[index].nodes[node].x = point.x
+            workflows[index].nodes[node].y = point.y
+        }
+        save()
+    }
+
+    /// Remembers pan and zoom so the canvas reopens where it was left.
+    public func setViewport(id: UUID, _ viewport: WorkflowViewport) {
+        guard let index = workflows.firstIndex(where: { $0.id == id }),
+              workflows[index].viewport != viewport else { return }
+        workflows[index].viewport = viewport
+        save()
+    }
+
+    /// After `id` is done: start the downstream tasks set to start on their
+    /// own, and report the ones now clear to start by hand.
+    private func advanceWorkflow(after id: UUID, at stamp: Date) {
+        guard let workflow = workflow(containing: id) else { return }
+        var advance = WorkflowAdvance(
+            workflowID: workflow.id,
+            workflowName: workflow.name,
+            completedTaskID: id,
+            started: [],
+            ready: []
+        )
+        for next in workflow.downstream(of: id) {
+            let byID = tasksByID
+            guard let task = byID[next], !task.isCompleted, !task.isRunning,
+                  workflow.blockers(of: next, tasks: byID).isEmpty else { continue }
+            if workflow.node(next)?.autoStart == true, resume(id: next, at: stamp) {
+                advance.started.append(next)
+            } else {
+                advance.ready.append(next)
+            }
+        }
+        guard !advance.isEmpty else { return }
+        onWorkflowAdvance?(advance)
+    }
+
     /// Deletes a task and, if it is a parent, every subtask under it.
     @discardableResult
     public func delete(id: UUID) -> Bool {
         let doomed = tasks.filter { $0.id == id || $0.parentID == id }
         guard !doomed.isEmpty else { return false }
         tasks.removeAll { $0.id == id || $0.parentID == id }
+        let kept = Set(tasks.map(\.id))
+        workflows = workflows.map { $0.pruned(keeping: kept) }
         if calendarSyncEnabled, let syncer {
             doomed.flatMap(\.calendarEventIDs).forEach(syncer.remove(eventID:))
         }
@@ -723,7 +962,8 @@ public final class TaskStore {
             brainSplitThreshold: brainSplitThreshold,
             tasks: tasks,
             calendarSyncEnabled: calendarSyncEnabled,
-            collections: collections
+            collections: collections,
+            workflows: workflows
         )
         do {
             try Self.write(snapshot, to: url)
@@ -743,6 +983,7 @@ public final class TaskStore {
         var brainSplitThreshold: Int
         var calendarSyncEnabled: Bool
         var collections: [TaskCollection] = []
+        var workflows: [Workflow] = []
         var error: String?
     }
 
@@ -764,6 +1005,8 @@ public final class TaskStore {
                 brainSplitThreshold: BrainSplitRules.clamp(snapshot.brainSplitThreshold),
                 calendarSyncEnabled: snapshot.calendarSyncEnabled,
                 collections: snapshot.collections,
+                // Nodes for tasks that are gone would draw as empty cards.
+                workflows: snapshot.workflows.map { $0.pruned(keeping: Set(snapshot.tasks.map(\.id))) },
                 error: nil
             )
         } catch {

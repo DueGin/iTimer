@@ -10,7 +10,7 @@ struct ITimerApp: App {
         Window("iTimer", id: "main") {
             MainView(store: .shared)
         }
-        .defaultSize(width: 1180, height: 780)
+        .defaultSize(width: 1380, height: 820)
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
@@ -19,6 +19,10 @@ struct ITimerApp: App {
                     NotificationCenter.default.post(name: .iTimerFocusNewTask, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                Button("新建工作流") {
+                    NotificationCenter.default.post(name: .iTimerNewWorkflow, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             }
         }
 
@@ -102,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             NudgeCenter.shared.start()
             ReminderCenter.shared.start(store: TaskStore.shared)
+            TaskStore.shared.onWorkflowAdvance = { advance in
+                NudgeCenter.shared.workflowAdvanced(advance, store: TaskStore.shared)
+            }
         }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 2, repeating: 2)
@@ -181,6 +188,7 @@ extension Notification.Name {
     static let iTimerOpenAnalysis = Notification.Name("iTimerOpenAnalysis")
     static let iTimerFocusNewTask = Notification.Name("iTimerFocusNewTask")
     static let iTimerNewSchedule = Notification.Name("iTimerNewSchedule")
+    static let iTimerNewWorkflow = Notification.Name("iTimerNewWorkflow")
     /// Posted by the clock loop; SwiftUI's onDisappear does not fire for
     /// MenuBarExtra panels.
     static let iTimerPanelClosed = Notification.Name("iTimerPanelClosed")

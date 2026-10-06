@@ -100,6 +100,63 @@ struct LabelMenus: View {
     }
 }
 
+/// Workflow submenu for a task's context menu: put it on a canvas (a
+/// task sits on one at a time), start a new canvas from it, or take it off.
+struct WorkflowMenu: View {
+    var task: TaskItem
+    var store: TaskStore
+
+    var body: some View {
+        let current = store.workflow(containing: task.id)
+        Menu("工作流") {
+            ForEach(store.workflows) { workflow in
+                Toggle(workflow.name, isOn: Binding(
+                    get: { current?.id == workflow.id },
+                    set: { on in
+                        if on {
+                            store.place(taskID: task.id, in: workflow.id)
+                        } else {
+                            store.removeNode(taskID: task.id, from: workflow.id)
+                        }
+                    }
+                ))
+            }
+            if !store.workflows.isEmpty { Divider() }
+            Button("放进新工作流") {
+                if let workflow = store.addWorkflow(task.title) {
+                    store.place(taskID: task.id, in: workflow.id)
+                }
+            }
+            if let current {
+                Button("移出「\(current.name)」") { store.removeNode(taskID: task.id, from: current.id) }
+            }
+        }
+    }
+}
+
+/// On a list row: the task's workflow says it should wait for upstream steps.
+struct WorkflowWaitPill: View {
+    var task: TaskItem
+    var store: TaskStore
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "hourglass")
+            Text("等上游")
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(.secondary)
+        .help(hint)
+        .accessibilityLabel(hint)
+    }
+
+    private var hint: String {
+        let names = store.workflowBlockers(of: task.id).map { "「\($0.title)」" }.joined(separator: "、")
+        let workflow = store.workflow(containing: task.id)?.name ?? ""
+        return "工作流「\(workflow)」里还在等 \(names) 完成"
+    }
+}
+
 /// Collection chips for the schedule composer. Tapping the selected one
 /// clears it. The trailing chip names a new collection in place and
 /// files the task into it, so filing never detours through Settings.

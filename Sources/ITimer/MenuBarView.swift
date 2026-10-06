@@ -574,7 +574,9 @@ struct MenuBarView: View {
                             if task.isRoot {
                                 row(task, now: now).draggable(task.id.uuidString)
                             } else {
+                                // Folders refuse a lone subtask; a workflow canvas takes it.
                                 row(task, now: now, nested: nested)
+                                    .draggable(task.id.uuidString)
                                     .padding(.leading, nested ? 18 : 0)
                             }
                         case .subtaskField(let parent):
@@ -639,7 +641,9 @@ struct MenuBarView: View {
     /// field sits right under the parent row.
     private func rowWithSubtaskField(_ task: TaskItem, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 2) {
+            // Draggable onto a workflow canvas in the main window.
             row(task, now: now)
+                .draggable(task.id.uuidString)
             if subtaskParentID == task.id {
                 subtaskField(task)
             }
@@ -1128,6 +1132,9 @@ struct TaskRow: View {
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
+                    if store.workflowState(of: task.id) == .blocked {
+                        WorkflowWaitPill(task: task, store: store)
+                    }
                     let children = store.subtasks(of: task.id)
                     if !children.isEmpty {
                         subtaskChip(children)
@@ -1400,6 +1407,7 @@ struct TaskRow: View {
         } else {
             LabelMenus(task: task, store: store, onEditLabels: beginLabelEdit)
         }
+        WorkflowMenu(task: task, store: store)
         Divider()
         Button(task.isPending ? "编辑日程…" : "编辑预计与提醒…", action: onEdit)
         Button("改名", action: beginRename)

@@ -14,7 +14,7 @@ enum SelfTest {
         resultURL = URL(fileURLWithPath: launch.resultPath)
         note("self-test started data=\(TaskStore.shared.url.path)")
         Task { @MainActor in
-            let passed = await exercise()
+            let passed = launch.scenario == "workflow" ? await exerciseWorkflow() : await exercise()
             note(passed ? "PASS" : "FAIL")
             persist(passed: passed)
             exit(passed ? 0 : 1)
@@ -543,9 +543,11 @@ enum SelfTest {
         let row = open.lazy.compactMap { find(identifier: "task-row-\($0.id.uuidString)") }.compactMap(screenCenter(of:)).first(where: window.frame.contains)
         // Otherwise aim where the list's first rows sit (under the hero card);
         // any row or folder menu there shows the same flash.
+        // In the main window the list is the column after the sidebar.
+        let sidebar = collect(NSSplitView.self, in: window.contentView).first?.arrangedSubviews.first?.frame.width ?? 0
         let point = row ?? (window === menuWindow()
             ? NSPoint(x: window.frame.midX, y: window.frame.maxY - 310)
-            : NSPoint(x: window.frame.minX + 180, y: window.frame.maxY - 350))
+            : NSPoint(x: window.frame.minX + sidebar + 180, y: window.frame.maxY - 350))
         let probe = MenuProbe()
         let center = NotificationCenter.default
         var observers = [
@@ -696,5 +698,197 @@ enum SelfTest {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
+    }
+}
+
+// MARK: - Workflow canvas
+
+extension SelfTest {
+    /// Drives the workflow canvas with mouse and key events sent through its
+    /// window, the way real input arrives: wire two cards from a port, move
+    /// a card, pan, scroll, delete a selected card, and type a new step.
+    static func exerciseWorkflow() async -> Bool {
+        let store = TaskStore.shared
+        guard let flow = store.addWorkflow("自检流程") else {
+            note("workflow not created")
+            return false
+        }
+        // A known viewport maps canvas points 1:1 onto the view, offset by it.
+        var origin = CGSize(width: 160, height: 160)
+        store.setViewport(id: flow.id, WorkflowViewport(x: origin.width, y: origin.height, scale: 1))
+        guard let first = store.addWorkflowStep(title: "甲", in: flow.id, x: 0, y: 0),
+              let second = store.addWorkflowStep(title: "乙", in: flow.id, x: 336, y: 0),
+              let third = store.addWorkflowStep(title: "丙", in: flow.id, x: 0, y: 192) else {
+            note("steps not created")
+            return false
+        }
+        UserDefaults.standard.set(MainDestination.workflow(flow.id).raw, forKey: "mainDestination")
+        for _ in 1...10 where !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard await wait(for: 5, label: "canvas", until: { canvasCatcher() != nil }),
+              let catcher = canvasCatcher(), let window = catcher.window else {
+            note("canvas not shown. windows=\(windowSummary())")
+            return false
+        }
+        window.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        func spot(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            catcher.convert(NSPoint(x: x + origin.width, y: y + origin.height), to: nil)
+        }
+        let half = CanvasMetrics.card.width / 2
+        let nodes = { store.workflow(id: flow.id)?.nodes ?? [] }
+        let edges = { store.workflow(id: flow.id)?.edges ?? [] }
+
+        await drag(in: window, from: spot(half + 7, 0), to: spot(336, 0))
+        guard await wait(for: 2, label: "link", until: { edges() == [WorkflowEdge(from: first.id, to: second.id)] }) else {
+            note("dragging 甲's port onto 乙 did not wire them: \(edges())")
+            return false
+        }
+        note("port drag wired 甲 → 乙")
+
+        await drag(in: window, from: spot(40, 200), to: spot(136, 272))
+        guard await wait(for: 2, label: "move", until: {
+            nodes().first { $0.taskID == third.id }.map { $0.x == 96 && $0.y == 264 } ?? false
+        }) else {
+            note("card drag did not land 丙 on (96, 264): \(String(describing: nodes().first { $0.taskID == third.id }))")
+            return false
+        }
+        note("card drag moved 丙 onto the half grid")
+
+        await drag(in: window, from: spot(480, 420), to: spot(380, 370))
+        guard await wait(for: 3, label: "pan", until: {
+            store.workflow(id: flow.id)?.viewport == WorkflowViewport(x: 60, y: 110, scale: 1)
+        }) else {
+            note("background drag did not pan: \(String(describing: store.workflow(id: flow.id)?.viewport))")
+            return false
+        }
+        origin = CGSize(width: 60, height: 110)
+        note("background drag panned and the viewport was saved")
+
+        if await scroll(in: window, at: spot(500, 300), dy: -40) {
+            guard await wait(for: 3, label: "scroll", until: {
+                store.workflow(id: flow.id)?.viewport == WorkflowViewport(x: 60, y: 70, scale: 1)
+            }) else {
+                note("scroll did not pan: \(String(describing: store.workflow(id: flow.id)?.viewport))")
+                return false
+            }
+            origin = CGSize(width: 60, height: 70)
+            note("scroll wheel panned")
+        }
+
+        await click(in: window, at: spot(336 + 40, 8))
+        await key(in: window, characters: "\u{7F}", code: 51)
+        guard await wait(for: 2, label: "delete", until: {
+            !nodes().contains { $0.taskID == second.id } && edges().isEmpty
+        }) else {
+            note("Delete did not take 乙 off the canvas: nodes=\(nodes().count) edges=\(edges().count)")
+            return false
+        }
+        guard store.tasks.contains(where: { $0.id == second.id }) else {
+            note("Delete removed the task itself, not just the card")
+            return false
+        }
+        note("Delete took the selected card off, task kept")
+
+        await click(in: window, at: spot(480, 300), count: 2)
+        guard await wait(for: 2, label: "composer", until: { window.firstResponder is NSTextView }),
+              let editor = window.firstResponder as? NSTextView else {
+            note("double-click did not open a focused step field: \(String(describing: window.firstResponder))")
+            return false
+        }
+        editor.insertText("丁 #自检x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let before = nodes().count
+        await key(in: window, characters: "\u{7F}", code: 51)
+        guard editor.string == "丁 #自检", nodes().count == before else {
+            note("Delete in the step field did not stay in the field: text=\(editor.string) nodes=\(nodes().count)")
+            return false
+        }
+        await key(in: window, characters: "\r", code: 36)
+        guard await wait(for: 2, label: "new step", until: {
+            store.tasks.contains { $0.title == "丁" && $0.tags == ["自检"] && store.workflow(containing: $0.id)?.id == flow.id }
+        }) else {
+            note("typing in the step field did not add 丁")
+            return false
+        }
+        await key(in: window, characters: "\u{1B}", code: 53)
+        note("double-click + typing added 丁 to the canvas")
+        snapshot(window, to: "/tmp/itimer-workflow.png")
+        return true
+    }
+
+    private static func canvasCatcher() -> CanvasEventCatcher.CatcherView? {
+        NSApp.windows.flatMap { collect(CanvasEventCatcher.CatcherView.self, in: $0.contentView) }.first
+    }
+
+    private static func mouse(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow, clicks: Int = 1) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: clicks, pressure: type == .leftMouseUp ? 0 : 1
+        )
+    }
+
+    private static func drag(in window: NSWindow, from: NSPoint, to: NSPoint, steps: Int = 10) async {
+        var events = [mouse(.leftMouseDown, at: from, in: window)]
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            events.append(mouse(.leftMouseDragged, at: NSPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t), in: window))
+        }
+        events.append(mouse(.leftMouseUp, at: to, in: window))
+        await play(events.compactMap { $0 }, in: window)
+    }
+
+    private static func click(in window: NSWindow, at point: NSPoint, count: Int = 1) async {
+        var events: [NSEvent?] = []
+        for clicks in 1...count {
+            events.append(mouse(.leftMouseDown, at: point, in: window, clicks: clicks))
+            events.append(mouse(.leftMouseUp, at: point, in: window, clicks: clicks))
+        }
+        await play(events.compactMap { $0 }, in: window)
+    }
+
+    private static func key(in window: NSWindow, characters: String, code: UInt16) async {
+        let events = [NSEvent.EventType.keyDown, .keyUp].compactMap { type in
+            NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: code
+            )
+        }
+        await play(events, in: window)
+    }
+
+    /// Queues a pixel scroll at a window point, where the canvas's event
+    /// monitor watches. False when no event could be made.
+    private static func scroll(in window: NSWindow, at point: NSPoint, dy: Int32) async -> Bool {
+        guard let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0) else {
+            note("scroll event unavailable; skipped")
+            return false
+        }
+        let screen = window.convertPoint(toScreen: point)
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        cgEvent.location = CGPoint(x: screen.x, y: top - screen.y)
+        guard let event = NSEvent(cgEvent: cgEvent) else {
+            note("scroll event unavailable; skipped")
+            return false
+        }
+        NSApp.postEvent(event, atStart: false)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return true
+    }
+
+    /// Sends each event through the window from a timer: a mouse-down may
+    /// start a tracking loop, which would hold up this task until release.
+    private static func play(_ events: [NSEvent], in window: NSWindow, gap: TimeInterval = 0.04) async {
+        for (index, event) in events.enumerated() {
+            nonisolated(unsafe) let event = event
+            RunLoop.main.add(Timer(timeInterval: gap * Double(index + 1), repeats: false) { _ in
+                MainActor.assumeIsolated { window.sendEvent(event) }
+            }, forMode: .common)
+        }
+        try? await Task.sleep(nanoseconds: UInt64((gap * Double(events.count + 2) + 0.35) * 1_000_000_000))
     }
 }

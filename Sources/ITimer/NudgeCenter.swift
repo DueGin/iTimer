@@ -48,6 +48,19 @@ final class NudgeCenter {
         }
     }
 
+    /// A workflow step was finished: say what started on its own and what
+    /// is now clear to start.
+    func workflowAdvanced(_ advance: WorkflowAdvance, store: TaskStore) {
+        guard Preferences.enabled(Preferences.workflowNudge) else { return }
+        let tasks = store.tasksByID
+        let finished = tasks[advance.completedTaskID]?.title ?? "上一步"
+        let quoted = { (ids: [UUID]) in ids.compactMap { tasks[$0].map { "「\($0.title)」" } }.joined(separator: "、") }
+        var lines: [String] = []
+        if !advance.started.isEmpty { lines.append("已自动开始计时：\(quoted(advance.started))") }
+        if !advance.ready.isEmpty { lines.append("可以开始了：\(quoted(advance.ready))") }
+        post(title: "「\(finished)」完成 · \(advance.workflowName)", body: lines.joined(separator: "\n"))
+    }
+
     private func post(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

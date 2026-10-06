@@ -6,6 +6,7 @@ import SwiftUI
 enum Preferences {
     static let brainSplitNudge = "itimer.nudge.brainSplit"
     static let longRunNudge = "itimer.nudge.longRun"
+    static let workflowNudge = "itimer.nudge.workflow"
 
     static func enabled(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
@@ -16,6 +17,7 @@ struct SettingsView: View {
     var store: TaskStore
     @AppStorage(Preferences.brainSplitNudge) private var brainSplitNudge = true
     @AppStorage(Preferences.longRunNudge) private var longRunNudge = true
+    @AppStorage(Preferences.workflowNudge) private var workflowNudge = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
     @State private var newCollection = ""
@@ -70,6 +72,7 @@ struct SettingsView: View {
             Section("提醒") {
                 Toggle("脑裂时提醒我", isOn: $brainSplitNudge)
                 Toggle("单个任务连续计时 \(Int(NudgeCenter.longRunThreshold / 3600)) 小时提醒（可能忘了暂停）", isOn: $longRunNudge)
+                Toggle("工作流里上一步完成时，告诉我下一步可以开始了", isOn: $workflowNudge)
             }
 
             Section {
