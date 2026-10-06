@@ -68,7 +68,7 @@ enum SelfTest {
         let baseFile = max(0, fileTaskCount())
         // Backdated starts so "today" charts have visible bars; without this
         // the whole run fits inside one second and the report is empty.
-        let labels = ["@工作 #方案", "@生活", "@工作 #bug"]
+        let labels = ["#方案", "#生活", "#bug"]
         for (index, title) in ["写方案", "回消息", "改bug"].enumerated() {
             let at = Date().addingTimeInterval(-2 * 3600 - Double(2 - index) * 600)
             NotificationCenter.default.post(name: .iTimerStartTask, object: nil, userInfo: ["title": "\(title) \(labels[index])", "at": at])
@@ -212,19 +212,25 @@ enum SelfTest {
         }
         guard exerciseSchedules() else { return false }
         if panelAvailable {
-            await captureRealPanel()
+            guard await captureRealPanel() else { return false }
         }
         return true
     }
 
     /// Snapshot the live MenuBarExtra panel with schedules, then with the
-    /// composer open, plus the main window — for visual review.
-    private static func captureRealPanel() async {
+    /// composer open, plus the main window — for visual review. Also checks
+    /// that context menus in both hold still while open.
+    private static func captureRealPanel() async -> Bool {
         if let main = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 800 }) {
             snapshot(main, to: "/tmp/itimer-real-main.png")
         }
         _ = closePanel()
         try? await Task.sleep(nanoseconds: 600_000_000)
+        // The main window keeps the store clock running (only the panel
+        // pauses it), so its menus are the ones exposed to per-second ticks.
+        if let main = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 800 }) {
+            guard await probeContextMenu(in: main, place: "main window") else { return false }
+        }
         var open = false
         for _ in 1...3 where !open {
             for window in NSApp.windows where window.isVisible && window.frame.width > 800 {
@@ -236,12 +242,14 @@ enum SelfTest {
             try? await Task.sleep(nanoseconds: 900_000_000)
             open = menuWindow() != nil
         }
-        guard open else { note("panel would not reopen for capture"); return }
-        snapshot(menuWindow(), to: "/tmp/itimer-real-panel.png")
+        guard open, let panel = menuWindow() else { note("panel would not reopen for capture"); return true }
+        snapshot(panel, to: "/tmp/itimer-real-panel.png")
+        guard await probeContextMenu(in: panel, place: "panel") else { return false }
         NotificationCenter.default.post(name: .iTimerNewSchedule, object: false)
         try? await Task.sleep(nanoseconds: 700_000_000)
         snapshot(menuWindow(), to: "/tmp/itimer-real-composer.png")
         _ = closePanel()
+        return true
     }
 
     /// Schedules never start on their own; overtime keeps counting.
@@ -249,8 +257,8 @@ enum SelfTest {
         let store = TaskStore.shared
         let now = Date()
         for task in store.runningTasks { store.complete(id: task.id, at: now) }
-        guard let due = store.addSchedule(title: "周会 @工作 #会议", start: now.addingTimeInterval(-600), plannedDuration: 3600, reminderLead: 0),
-              store.addSchedule(title: "写周报 @工作 #汇报", start: now.addingTimeInterval(7200), plannedDuration: 7200, reminderLead: 600) != nil,
+        guard let due = store.addSchedule(title: "周会 #会议", start: now.addingTimeInterval(-600), plannedDuration: 3600, reminderLead: 0),
+              store.addSchedule(title: "写周报 #汇报", start: now.addingTimeInterval(7200), plannedDuration: 7200, reminderLead: 600) != nil,
               let review = store.addSchedule(title: "代码评审", start: now.addingTimeInterval(-3 * 3600), plannedDuration: 3600, reminderLead: nil) else {
             note("addSchedule failed")
             return false
@@ -275,7 +283,7 @@ enum SelfTest {
         }
         note("undated schedule waits in 时间待定 without reminder")
         render(MenuBarView(store: store), size: NSSize(width: 380, height: 640), to: "/tmp/itimer-schedule-popup.png")
-        var draft = ScheduleDraft.new(title: "准备季度汇报 @工作 #汇报 #PPT", asOf: now)
+        var draft = ScheduleDraft.new(title: "准备季度汇报 #汇报 #PPT", asOf: now)
         render(
             ScheduleComposer(
                 draft: Binding(get: { draft }, set: { draft = $0 }),
@@ -322,6 +330,43 @@ enum SelfTest {
             size: NSSize(width: 380, height: 460),
             to: "/tmp/itimer-composer-undated.png"
         )
+        guard let folder = store.addCollection("本周交付"),
+              store.addCollection("副业") != nil,
+              store.setCollection(id: due.id, folder.id),
+              store.setCollection(id: review.id, folder.id),
+              let child = store.addSubtask(parentID: review.id, title: "看完鉴权模块"),
+              child.collectionID == folder.id else {
+            note("folders failed")
+            return false
+        }
+        note("tasks filed into folders")
+        // The row's "add subtask" field: undated, filed with its parent,
+        // and shown in the parent's progress count.
+        guard let step = store.addSchedule(title: "补单测 #测试", parentID: review.id, start: nil, plannedDuration: nil, reminderLead: nil),
+              step.isUndated, step.parentID == review.id, step.collectionID == folder.id, step.tags == ["测试"],
+              store.subtasks(of: review.id).count == 2 else {
+            note("subtask from the row field failed")
+            return false
+        }
+        note("subtasks nest under their parent")
+        render(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-folders-popup.png")
+        // Folding the parent hides its subtasks in the folder view; the
+        // flag lives in the app's defaults, so put the user's back after.
+        let defaults = UserDefaults.standard
+        let savedFolds = defaults.string(forKey: "collapsedParents")
+        defer { defaults.set(savedFolds, forKey: "collapsedParents") }
+        defaults.set("", forKey: "collapsedParents")
+        let unfolded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760))
+        defaults.set(review.id.uuidString, forKey: "collapsedParents")
+        let folded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-folders-folded.png")
+        guard unfolded.contains(where: { $0.contains("看完鉴权模块") }),
+              !folded.contains(where: { $0.contains("看完鉴权模块") }),
+              folded.contains(where: { $0.contains("代码评审") }),
+              folded.contains("展开子任务") else {
+            note("folding subtasks failed")
+            return false
+        }
+        note("parents fold their subtasks")
         return true
     }
 
@@ -424,6 +469,32 @@ enum SelfTest {
         offscreen.orderOut(nil)
     }
 
+    /// Texts and labels a view puts in the accessibility tree, read from
+    /// an offscreen window (optionally snapshotted too).
+    private static func renderedLabels<V: View>(_ view: V, size: NSSize, to path: String? = nil) -> [String] {
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(origin: .zero, size: size)
+        let offscreen = NSWindow(contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        offscreen.contentView = hosting
+        offscreen.orderFrontRegardless()
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        if let path { snapshot(offscreen, to: path) }
+        var labels: [String] = []
+        func walk(_ element: Any, depth: Int) {
+            guard depth < 40, let element = element as? NSObject else { return }
+            for key in ["accessibilityLabel", "accessibilityValue", "accessibilityTitle"]
+            where element.responds(to: NSSelectorFromString(key)) {
+                if let text = element.value(forKey: key) as? String, !text.isEmpty { labels.append(text) }
+            }
+            guard element.responds(to: NSSelectorFromString("accessibilityChildren")) else { return }
+            for child in (element.value(forKey: "accessibilityChildren") as? [Any]) ?? [] { walk(child, depth: depth + 1) }
+        }
+        walk(hosting, depth: 0)
+        offscreen.orderOut(nil)
+        return labels
+    }
+
     private static func snapshot(_ window: NSWindow?, to path: String) {
         window?.displayIfNeeded()
         guard let view = window?.contentView else { note("no window to snapshot \(path)"); return }
@@ -447,6 +518,95 @@ enum SelfTest {
     private static func closePanel() -> Bool {
         guard menuWindow() != nil else { return true }
         return clickStatusItem()
+    }
+
+    /// Tallies from an open context menu. Touched on the main thread only
+    /// (menu notifications and the timers run there).
+    private final class MenuProbe: @unchecked Sendable {
+        var openedAt: Date?
+        var closed = false
+        /// Item changes after the menu finished building: each is a flash.
+        var rebuilds = 0
+        var menu: NSMenu?
+    }
+
+    /// Right-clicks the first open task row in `window`, holds the menu open
+    /// for a few seconds and fails if its items get rebuilt meanwhile (the
+    /// menu visibly flashes). Skipped, not failed, when no row is reachable.
+    private static func probeContextMenu(in window: NSWindow, place: String) async -> Bool {
+        // Rows are only reachable through accessibility while the app is active.
+        for _ in 1...10 where !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let open = TaskStore.shared.tasks.filter { !$0.isCompleted }
+        let row = open.lazy.compactMap { find(identifier: "task-row-\($0.id.uuidString)") }.compactMap(screenCenter(of:)).first(where: window.frame.contains)
+        // Otherwise aim where the list's first rows sit (under the hero card);
+        // any row or folder menu there shows the same flash.
+        let point = row ?? (window === menuWindow()
+            ? NSPoint(x: window.frame.midX, y: window.frame.maxY - 310)
+            : NSPoint(x: window.frame.minX + 180, y: window.frame.maxY - 350))
+        let probe = MenuProbe()
+        let center = NotificationCenter.default
+        var observers = [
+            center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { note in
+                guard probe.menu == nil else { return }
+                probe.menu = note.object as? NSMenu
+                probe.openedAt = Date()
+            },
+            center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil) { note in
+                if note.object as? NSMenu === probe.menu { probe.closed = true }
+            },
+        ]
+        for name in [NSMenu.didAddItemNotification, NSMenu.didRemoveItemNotification, NSMenu.didChangeItemNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
+                guard let openedAt = probe.openedAt, !probe.closed, Date().timeIntervalSince(openedAt) > 0.5 else { return }
+                probe.rebuilds += 1
+            })
+        }
+        defer { observers.forEach(center.removeObserver) }
+        // Long enough for several clock ticks. Tracking blocks this task's
+        // actor, so both the click and the close come from run-loop timers:
+        // a click sent from inside this task would also stall the app clock
+        // (a main-actor job) and hide exactly the rebuilds being probed.
+        let closer = Timer(timeInterval: 3.5, repeats: false) { _ in probe.menu?.cancelTracking() }
+        RunLoop.main.add(closer, forMode: .common)
+        guard let click = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: window.convertPoint(fromScreen: point), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ) else { return true }
+        nonisolated(unsafe) let event = click
+        RunLoop.main.add(Timer(timeInterval: 0.05, repeats: false) { _ in
+            MainActor.assumeIsolated { window.sendEvent(event) }
+        }, forMode: .common)
+        try? await Task.sleep(nanoseconds: 4_200_000_000)
+        guard probe.menu != nil else {
+            closer.invalidate()
+            note("menu probe (\(place)): menu did not open, skipped")
+            return true
+        }
+        guard probe.rebuilds == 0 else {
+            note("context menu (\(place)) rebuilt \(probe.rebuilds) items while open — it flashes")
+            return false
+        }
+        note("context menu (\(place)) held still while open")
+        return true
+    }
+
+    /// Screen point (AppKit, bottom-left origin) at the element's center.
+    private static func screenCenter(of element: AXUIElement) -> NSPoint? {
+        var position: CFTypeRef?
+        var size: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+              let position, let size else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        AXValueGetValue(position as! AXValue, .cgPoint, &origin)
+        AXValueGetValue(size as! AXValue, .cgSize, &extent)
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        return NSPoint(x: origin.x + extent.width / 2, y: top - (origin.y + extent.height / 2))
     }
 
     private static func clickStatusItem() -> Bool {

@@ -1,15 +1,15 @@
 import ITimerCore
 import SwiftUI
 
-/// A task's category: colored dot + name.
-struct CategoryPill: View {
-    var name: String
+/// A task's collection: colored dot + name.
+struct CollectionPill: View {
+    var collection: TaskCollection
 
     var body: some View {
-        let color = Theme.category(name)
+        let color = Theme.collectionColor(index: collection.color)
         HStack(spacing: 3) {
             Circle().fill(color).frame(width: 5, height: 5)
-            Text(name)
+            Text(collection.name)
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(color)
@@ -19,7 +19,7 @@ struct CategoryPill: View {
     }
 }
 
-/// A free-form tag, lighter than a category so the two read apart.
+/// A free-form tag, lighter than a collection so the two read apart.
 struct TagPill: View {
     var tag: String
 
@@ -30,26 +30,59 @@ struct TagPill: View {
     }
 }
 
-/// Category and tag submenus for a task's context menu. Menus are safe in
-/// the MenuBarExtra panel; typing a new tag goes through `onEditLabels`.
+/// Collection, parent and tag submenus for a task's context menu.
+/// Menus are safe in the MenuBarExtra panel but cannot take typing, so a
+/// new tag goes through `onEditLabels` and a new collection through
+/// `onNewCollection` (the composer, which names it inline).
 struct LabelMenus: View {
     var task: TaskItem
     var store: TaskStore
     var onEditLabels: (() -> Void)?
+    var onAddSubtask: (() -> Void)?
+    var onNewCollection: (() -> Void)?
 
     var body: some View {
-        Menu("分类") {
-            ForEach(store.categories) { category in
-                Toggle(category.name, isOn: Binding(
-                    get: { task.category == category.name },
-                    set: { store.setCategory(id: task.id, $0 ? category.name : nil) }
-                ))
+        if task.isRoot {
+            Menu("集合") {
+                if store.collections.isEmpty && onNewCollection == nil {
+                    Button("还没有集合") {}
+                        .disabled(true)
+                }
+                ForEach(store.collections) { collection in
+                    Toggle(collection.name, isOn: Binding(
+                        get: { task.collectionID == collection.id },
+                        set: { store.setCollection(id: task.id, $0 ? collection.id : nil) }
+                    ))
+                }
+                if onNewCollection != nil || task.collectionID != nil {
+                    if !store.collections.isEmpty { Divider() }
+                    if let onNewCollection {
+                        Button("新建集合…", action: onNewCollection)
+                    }
+                    if task.collectionID != nil {
+                        Button("移出集合") { store.setCollection(id: task.id, nil) }
+                    }
+                }
             }
-            Divider()
-            Toggle(CategoryStats.uncategorized, isOn: Binding(
-                get: { task.category == nil },
-                set: { if $0 { store.setCategory(id: task.id, nil) } }
-            ))
+        }
+        Menu("子任务") {
+            if let parent = store.parent(of: task) {
+                Button("属于「\(parent.title)」") {}
+                    .disabled(true)
+                Button("移出，成为独立任务") { store.setParent(id: task.id, nil) }
+            } else {
+                if let onAddSubtask {
+                    Button("添加子任务…", action: onAddSubtask)
+                }
+                let parents = store.tasks.filter { $0.isRoot && $0.id != task.id && store.subtasks(of: $0.id).isEmpty }
+                if !parents.isEmpty {
+                    Menu("归入其他任务") {
+                        ForEach(parents.prefix(12)) { parent in
+                            Button(parent.title) { store.setParent(id: task.id, parent.id) }
+                        }
+                    }
+                }
+            }
         }
         Menu("标签") {
             let known = Array(TitleParser.merge(task.tags, store.knownTags).prefix(12))
@@ -67,26 +100,28 @@ struct LabelMenus: View {
     }
 }
 
-/// Category chips for the schedule composer. Tapping the selected one
-/// clears it. A name typed via `@` that is not in the list yet shows too.
-struct CategoryPicker: View {
-    @Binding var selection: String?
-    var categories: [TaskCategory]
+/// Collection chips for the schedule composer. Tapping the selected one
+/// clears it. The trailing chip names a new collection in place and
+/// files the task into it, so filing never detours through Settings.
+struct CollectionPicker: View {
+    @Binding var selection: UUID?
+    var collections: [TaskCollection]
+    var onCreate: (String) -> TaskCollection?
+    @State private var naming = false
+    @State private var name = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
-        let names = categories.map(\.name) + (selection.map { name in
-            categories.contains { $0.name == name } ? [] : [name]
-        } ?? [])
         FlowLayout(spacing: 4) {
-            ForEach(names, id: \.self) { name in
-                let selected = selection == name
-                let color = Theme.category(name)
+            ForEach(collections) { collection in
+                let selected = selection == collection.id
+                let color = Theme.collectionColor(index: collection.color)
                 Button {
-                    selection = selected ? nil : name
+                    selection = selected ? nil : collection.id
                 } label: {
                     HStack(spacing: 4) {
                         Circle().fill(color).frame(width: 6, height: 6)
-                        Text(name)
+                        Text(collection.name)
                     }
                     .font(.caption.weight(selected ? .semibold : .regular))
                     .foregroundStyle(selected ? color : Color.primary)
@@ -99,8 +134,60 @@ struct CategoryPicker: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
+            creator
         }
-        .accessibilityIdentifier("category-picker")
+        .accessibilityIdentifier("collection-picker")
+    }
+
+    @ViewBuilder
+    private var creator: some View {
+        if naming {
+            TextField("集合名，回车创建", text: $name)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: 104)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05), in: Capsule())
+                .overlay { Capsule().strokeBorder(Theme.focused.opacity(0.5), lineWidth: 1) }
+                .focused($nameFocused)
+                .onSubmit(create)
+                .onExitCommand(perform: cancel)
+                .onChange(of: nameFocused) { _, focused in
+                    if !focused && name.trimmingCharacters(in: .whitespaces).isEmpty { cancel() }
+                }
+                .accessibilityIdentifier("collection-new-name")
+        } else {
+            Button {
+                naming = true
+                nameFocused = true
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "plus").font(.system(size: 8, weight: .bold))
+                    Text(collections.isEmpty ? "新建集合" : "新集合")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("新建一个集合，并把这个任务归进去")
+            .accessibilityIdentifier("collection-new")
+        }
+    }
+
+    private func create() {
+        guard let collection = onCreate(name) else { return }
+        selection = collection.id
+        cancel()
+    }
+
+    private func cancel() {
+        name = ""
+        naming = false
     }
 }
 
@@ -161,7 +248,7 @@ struct TagEditor: View {
     }
 
     private func commit() {
-        let tag = TaskCategory.clean(input)
+        let tag = TaskCollection.clean(input)
         input = ""
         guard !tag.isEmpty else { return }
         tags = TitleParser.merge(tags, [tag])

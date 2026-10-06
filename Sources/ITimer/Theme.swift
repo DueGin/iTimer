@@ -76,24 +76,24 @@ enum Theme {
         tags.first.map(tag) ?? focused
     }
 
-    /// Category colors a user can pick from; orange and pink stay reserved.
-    static let categoryPalette: [Color] = [.blue, .green, .purple, .teal, .brown, .mint, .cyan, .indigo]
+    /// Collection colors a user can pick from; orange and pink stay reserved.
+    static let collectionPalette: [Color] = [.blue, .green, .purple, .teal, .brown, .mint, .cyan, .indigo]
 
-    static func categoryColor(index: Int) -> Color {
-        categoryPalette[((index % categoryPalette.count) + categoryPalette.count) % categoryPalette.count]
+    static func collectionColor(index: Int) -> Color {
+        collectionPalette[((index % collectionPalette.count) + collectionPalette.count) % collectionPalette.count]
     }
 
-    /// Color of a category by name, from the shared store; gray for 未分类
-    /// or a name no longer in the list.
+    /// Color of a collection by id, from the shared store; gray when the
+    /// task is not filed in one, or the collection is gone.
     @MainActor
-    static func category(_ name: String?) -> Color {
-        TaskStore.shared.category(named: name).map { categoryColor(index: $0.color) } ?? .gray
+    static func collection(_ id: UUID?) -> Color {
+        TaskStore.shared.collection(id: id).map { collectionColor(index: $0.color) } ?? .gray
     }
 
-    /// Lanes follow the category when there is one, else the first tag.
+    /// Lanes follow the collection when the task is filed, else the first tag.
     @MainActor
     static func lane(_ span: LaneSpan) -> Color {
-        span.category != nil ? category(span.category) : lane(tags: span.tags)
+        span.collectionID != nil ? collection(span.collectionID) : lane(tags: span.tags)
     }
 }
 

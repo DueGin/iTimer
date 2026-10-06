@@ -82,7 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
                         && $0.identifier?.rawValue.hasPrefix("main") == true
                 })
-                if !panelOpen {
+                // A tick re-renders the task lists, and an open context menu
+                // in the main window would be rebuilt with them (it flashes).
+                if !panelOpen && !MenuTracking.isOpen {
                     store.tick()
                     StatusEffects.shared.heartbeat(
                         running: store.runningCount,

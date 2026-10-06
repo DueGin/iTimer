@@ -52,13 +52,14 @@ public struct AnalysisDigest: Equatable, Sendable {
     public var days: [DayLoad]
     public var dayScores: [DayScore]
     public var tags: [TagSlice]
-    public var categories: [TagSlice]
+    public var collections: [TagSlice]
 
     /// Days in the trend chart, newest last. Older history is left out.
     public static let trendDays = 90
 
     public static func build(
         tasks: [TaskItem],
+        collections: [TaskCollection] = [],
         range: AnalysisRange,
         threshold: Int,
         now: Date,
@@ -104,7 +105,7 @@ public struct AnalysisDigest: Equatable, Sendable {
             days: ChartSeries.days(of: report.slices, window: window, threshold: report.threshold, calendar: calendar),
             dayScores: range == .today ? [] : dayScores(tasks: tasks, window: window, threshold: threshold, now: now, calendar: calendar),
             tags: TagStats.slices(tasks: tasks, window: window, now: now),
-            categories: CategoryStats.slices(tasks: tasks, window: window, now: now)
+            collections: CollectionStats.slices(tasks: tasks, collections: collections, window: window, now: now)
         )
     }
 
@@ -141,8 +142,9 @@ public final class DigestCache {
 
     private struct Key: Equatable {
         var tasks: [TaskItem]
+        var collections: [TaskCollection]
         var threshold: Int
-        var category: String?
+        var collectionID: UUID?
         var bucket: Int
     }
 
@@ -151,24 +153,26 @@ public final class DigestCache {
 
     public init() {}
 
-    /// `category` narrows everything to one category (a name, or
-    /// `CategoryStats.uncategorized`); nil = all tasks.
+    /// `collectionID` narrows everything to one collection. Pass
+    /// `CollectionStats.uncollectedID` for tasks filed in none; nil = all tasks.
     public func digest(
         store: TaskStore,
         range: AnalysisRange,
-        category: String? = nil,
+        collectionID: UUID? = nil,
         calendar: Calendar = .current
     ) -> AnalysisDigest {
         let key = Key(
             tasks: store.tasks,
+            collections: store.collections,
             threshold: store.brainSplitThreshold,
-            category: category,
+            collectionID: collectionID,
             bucket: Int(store.now.timeIntervalSince1970 / 30)
         )
         if let entry = entries[range], entry.key == key { return entry.value }
-        let tasks = category.map { name in store.tasks.filter { CategoryStats.key($0) == name } } ?? store.tasks
+        let tasks = Self.filtered(store.tasks, collectionID: collectionID)
         let fresh = AnalysisDigest.build(
             tasks: tasks,
+            collections: store.collections,
             range: range,
             threshold: store.brainSplitThreshold,
             now: store.now,
@@ -177,5 +181,15 @@ public final class DigestCache {
         computations += 1
         entries[range] = (key, fresh)
         return fresh
+    }
+
+    /// nil keeps every task. `CollectionStats.uncollectedID` keeps tasks
+    /// with no collection; any other id keeps that collection.
+    public static func filtered(_ tasks: [TaskItem], collectionID: UUID?) -> [TaskItem] {
+        guard let collectionID else { return tasks }
+        if collectionID == CollectionStats.uncollectedID {
+            return tasks.filter { $0.collectionID == nil }
+        }
+        return tasks.filter { $0.collectionID == collectionID }
     }
 }

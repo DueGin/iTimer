@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 struct AnalysisView: View {
     var store: TaskStore
     @State private var range: AnalysisRange
-    /// nil = every category; otherwise a name or `CategoryStats.uncategorized`.
-    @State private var category: String?
+    /// nil = every collection. `CollectionStats.uncollectedID` = unfiled tasks.
+    @State private var collectionID: UUID?
 
     init(store: TaskStore, range: AnalysisRange = .today) {
         self.store = store
@@ -15,7 +15,7 @@ struct AnalysisView: View {
     }
 
     var body: some View {
-        let digest = DigestCache.shared.digest(store: store, range: range, category: category)
+        let digest = DigestCache.shared.digest(store: store, range: range, collectionID: collectionID)
         let report = digest.report
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -43,15 +43,15 @@ struct AnalysisView: View {
                         LevelChartCard(shares: ChartSeries.shares(of: report.slices), threshold: report.threshold)
                     }
                     HStack(alignment: .top, spacing: 16) {
-                        if category == nil {
-                            TagChartCard(slices: digest.categories, kind: .category)
+                        if collectionID == nil {
+                            TagChartCard(slices: digest.collections, kind: .collection, collections: store.collections)
                         }
                         TagChartCard(slices: digest.tags)
-                        if category != nil {
+                        if collectionID != nil {
                             OverlapCard(overlaps: report.overlaps)
                         }
                     }
-                    if category == nil {
+                    if collectionID == nil {
                         OverlapCard(overlaps: report.overlaps)
                     }
                     RecordsCard(tasks: report.tasks, store: store)
@@ -77,18 +77,18 @@ struct AnalysisView: View {
                 .accessibilityIdentifier("range-picker")
             }
             ToolbarItem(placement: .navigation) {
-                Picker("分类", selection: $category) {
-                    Text("全部分类").tag(String?.none)
+                Picker("集合", selection: $collectionID) {
+                    Text("全部集合").tag(UUID?.none)
                     Divider()
-                    ForEach(store.categories) { item in
-                        Text(item.name).tag(Optional(item.name))
+                    ForEach(store.collections) { item in
+                        Text(item.name).tag(Optional(item.id))
                     }
-                    Text(CategoryStats.uncategorized).tag(Optional(CategoryStats.uncategorized))
+                    Text(CollectionStats.uncollected).tag(Optional(CollectionStats.uncollectedID))
                 }
                 .pickerStyle(.menu)
                 .fixedSize()
-                .help("只看某个分类的计时")
-                .accessibilityIdentifier("category-filter")
+                .help("只看某个集合的计时")
+                .accessibilityIdentifier("collection-filter")
             }
             ToolbarItem(placement: .primaryAction) {
                 ThresholdControl(value: thresholdBinding)
@@ -156,13 +156,13 @@ struct AnalysisView: View {
     private func exportCSV() {
         let window = range.window(asOf: store.now, tasks: store.tasks)
         let iso = ISO8601DateFormatter()
-        var lines = ["任务,分类,标签,开始,结束,秒"]
-        for task in store.tasks where category.map({ CategoryStats.key(task) == $0 }) ?? true {
+        var lines = ["任务,集合,标签,开始,结束,秒"]
+        for task in DigestCache.filtered(store.tasks, collectionID: collectionID) {
             for segment in task.segments {
                 guard let clipped = segment.clipped(to: window, asOf: store.now) else { continue }
                 let title = "\"" + task.title.replacingOccurrences(of: "\"", with: "\"\"") + "\""
                 let tags = "\"" + task.tags.joined(separator: " ") + "\""
-                let group = "\"" + (task.category ?? "") + "\""
+                let group = "\"" + (store.collection(id: task.collectionID)?.name ?? "") + "\""
                 lines.append("\(title),\(group),\(tags),\(iso.string(from: clipped.start)),\(iso.string(from: clipped.end)),\(Int(clipped.duration))")
             }
         }
@@ -432,8 +432,16 @@ private struct RecordRow: View {
             HStack(spacing: 6) {
                 Text(task.title)
                     .lineLimit(1)
-                if let category = store.tasks.first(where: { $0.id == task.id })?.category {
-                    CategoryPill(name: category)
+                if let item = store.tasks.first(where: { $0.id == task.id }) {
+                    if let collection = store.collection(id: item.collectionID) {
+                        CollectionPill(collection: collection)
+                    }
+                    if item.hasJournal {
+                        Image(systemName: "text.bubble.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.focused)
+                            .help(journalHint(item))
+                    }
                 }
             }
             .frame(minWidth: 120, alignment: .leading)
@@ -466,6 +474,13 @@ private struct RecordRow: View {
         .contextMenu {
             Button("删除", role: .destructive) { store.delete(id: task.id) }
         }
+    }
+
+    private func journalHint(_ item: TaskItem) -> String {
+        var parts: [String] = []
+        if !item.note.isEmpty { parts.append(item.note) }
+        if let latest = item.comments.last { parts.append(latest.text) }
+        return parts.joined(separator: "\n")
     }
 
     @ViewBuilder
