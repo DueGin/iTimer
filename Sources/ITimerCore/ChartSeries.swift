@@ -123,7 +123,7 @@ public enum ChartSeries {
                     taskID: task.id,
                     title: task.title,
                     tags: task.tags,
-                    category: task.category,
+                    collectionID: task.collectionID,
                     start: clipped.start,
                     end: clipped.end,
                     isRunning: segment.endedAt == nil
@@ -191,7 +191,7 @@ public struct LaneSpan: Identifiable, Equatable, Sendable {
     public var taskID: UUID
     public var title: String
     public var tags: [String]
-    public var category: String?
+    public var collectionID: UUID?
     public var start: Date
     public var end: Date
     public var isRunning: Bool

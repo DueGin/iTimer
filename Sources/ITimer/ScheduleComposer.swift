@@ -14,17 +14,19 @@ struct ScheduleDraft: Equatable {
     var duration: TimeInterval? = ScheduleOptions.defaultDuration
     var reminderLead: TimeInterval? = ScheduleOptions.defaultReminderLead
     var tags: [String] = []
-    var category: String?
+    var collectionID: UUID?
+    /// Set when this schedule is a subtask. Not editable here — the parent
+    /// owns the collection, and nesting stays one level deep.
+    var parentID: UUID?
 
-    /// `title` may carry `#标签 @分类` from the quick field; they move into
-    /// the pickers.
-    static func new(title: String = "", asOf now: Date) -> ScheduleDraft {
+    /// `title` may carry `#标签` from the quick field; they move into the picker.
+    static func new(title: String = "", collectionID: UUID? = nil, asOf now: Date) -> ScheduleDraft {
         let parsed = TitleParser.parse(title)
         return ScheduleDraft(
             title: parsed.title,
             start: ScheduleOptions.suggestedStart(after: now),
             tags: parsed.tags,
-            category: parsed.category
+            collectionID: collectionID
         )
     }
 
@@ -38,21 +40,20 @@ struct ScheduleDraft: Equatable {
             duration: task.plannedDuration,
             reminderLead: task.reminderLead ?? (task.isUndated ? ScheduleOptions.defaultReminderLead : nil),
             tags: task.tags,
-            category: task.category
+            collectionID: task.collectionID,
+            parentID: task.parentID
         )
     }
 
     /// What to store: nil while the time is still to be decided.
     var scheduledStart: Date? { hasTime ? start : nil }
 
-    /// Title, tags and category with anything typed as `#`/`@` in the
-    /// title folded in.
+    /// Title and tags, with anything typed as `#` in the title folded in.
     var resolved: ParsedTitle {
         let parsed = TitleParser.parse(title.trimmingCharacters(in: .whitespacesAndNewlines))
         return ParsedTitle(
             title: parsed.title,
-            tags: TitleParser.merge(tags, parsed.tags),
-            category: parsed.category ?? category
+            tags: TitleParser.merge(tags, parsed.tags)
         )
     }
 
@@ -70,7 +71,8 @@ struct ScheduleComposer: View {
     var onSave: () -> Void
     var onStartNow: () -> Void
     var onCancel: () -> Void
-    var categories: [TaskCategory] = TaskStore.shared.categories
+    var collections: [TaskCollection] = TaskStore.shared.collections
+    var onCreateCollection: (String) -> TaskCollection? = { TaskStore.shared.addCollection($0) }
     var knownTags: [String] = TaskStore.shared.knownTags
     @FocusState private var titleFocused: Bool
     /// Inline day list. Not a Menu/Picker: those take focus and the
@@ -160,9 +162,11 @@ struct ScheduleComposer: View {
                     .accessibilityIdentifier("schedule-reminder")
                 }
             }
-            divider
-            row("分类") {
-                CategoryPicker(selection: $draft.category, categories: categories)
+            if draft.parentID == nil {
+                divider
+                row("集合") {
+                    CollectionPicker(selection: $draft.collectionID, collections: collections, onCreate: onCreateCollection)
+                }
             }
             divider
             row("标签") {

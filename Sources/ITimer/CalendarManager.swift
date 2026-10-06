@@ -36,10 +36,14 @@ final class EventKitSync: TaskCalendarSyncing {
             event = EKEvent(eventStore: eventStore)
             event.calendar = target
         }
-        let labels = (task.category.map { ["@\($0)"] } ?? []) + task.tags.map { "#\($0)" }
+        let labels = task.tags.map { "#\($0)" }
         let tagLine = labels.isEmpty ? "" : labels.joined(separator: " ") + "\n"
         let planLine = task.plannedDuration.map { "预计 \(DurationFormat.prose($0))\n" } ?? ""
-        let notes = tagLine + planLine + "iTimer"
+        let noteLine = task.note.isEmpty ? "" : task.note + "\n"
+        let commentLine = task.comments.isEmpty
+            ? ""
+            : task.comments.map { "· \($0.text)" }.joined(separator: "\n") + "\n"
+        let notes = tagLine + planLine + noteLine + commentLine + "iTimer"
         // The running refresh re-pushes every range each minute; skip the
         // write when this one (e.g. an earlier, closed stretch) is unchanged.
         if event.eventIdentifier != nil, event.title == task.title, event.startDate == range.start,

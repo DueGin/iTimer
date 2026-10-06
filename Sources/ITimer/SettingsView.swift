@@ -6,6 +6,7 @@ import SwiftUI
 enum Preferences {
     static let brainSplitNudge = "itimer.nudge.brainSplit"
     static let longRunNudge = "itimer.nudge.longRun"
+    static let workflowNudge = "itimer.nudge.workflow"
 
     static func enabled(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
@@ -16,9 +17,10 @@ struct SettingsView: View {
     var store: TaskStore
     @AppStorage(Preferences.brainSplitNudge) private var brainSplitNudge = true
     @AppStorage(Preferences.longRunNudge) private var longRunNudge = true
+    @AppStorage(Preferences.workflowNudge) private var workflowNudge = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
-    @State private var newCategory = ""
+    @State private var newCollection = ""
 
     var body: some View {
         Form {
@@ -41,31 +43,36 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(Array(store.categories.enumerated()), id: \.element.id) { index, category in
-                    CategoryRow(
-                        category: category,
+                if store.collections.isEmpty {
+                    Text("还没有集合。新建一个，再把任务归进去。")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(store.collections.enumerated()), id: \.element.id) { index, collection in
+                    CollectionRow(
+                        collection: collection,
                         isFirst: index == 0,
-                        isLast: index == store.categories.count - 1,
+                        isLast: index == store.collections.count - 1,
                         store: store
                     )
                 }
                 HStack {
-                    TextField("新分类", text: $newCategory)
+                    TextField("新集合", text: $newCollection)
                         .textFieldStyle(.roundedBorder)
-                        .onSubmit(addCategory)
-                        .accessibilityIdentifier("settings-new-category")
-                    Button("添加", action: addCategory)
-                        .disabled(TaskCategory.clean(newCategory).isEmpty)
+                        .onSubmit(addCollection)
+                        .accessibilityIdentifier("settings-new-collection")
+                    Button("添加", action: addCollection)
+                        .disabled(TaskCollection.clean(newCollection).isEmpty)
                 }
             } header: {
-                Text("分类")
+                Text("任务集合")
             } footer: {
-                Text("每个任务可归入一个分类，另可加多个标签。在输入框里用 @分类 #标签，或右键任务修改。删除分类后，其中的任务变为未分类。")
+                Text("集合由你新建，不会自动出现。一个任务归入一个集合，另可加多个标签。右键任务即可归入或移出。删除集合后，其中的任务仍在，只是不再归集。")
             }
 
             Section("提醒") {
                 Toggle("脑裂时提醒我", isOn: $brainSplitNudge)
                 Toggle("单个任务连续计时 \(Int(NudgeCenter.longRunThreshold / 3600)) 小时提醒（可能忘了暂停）", isOn: $longRunNudge)
+                Toggle("工作流里上一步完成时，告诉我下一步可以开始了", isOn: $workflowNudge)
             }
 
             Section {
@@ -103,8 +110,8 @@ struct SettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func addCategory() {
-        if store.addCategory(newCategory) != nil { newCategory = "" }
+    private func addCollection() {
+        if store.addCollection(newCollection) != nil { newCollection = "" }
     }
 
     private var thresholdBinding: Binding<Int> {
@@ -153,8 +160,8 @@ struct SettingsView: View {
     }
 }
 
-private struct CategoryRow: View {
-    var category: TaskCategory
+private struct CollectionRow: View {
+    var collection: TaskCollection
     var isFirst: Bool
     var isLast: Bool
     var store: TaskStore
@@ -163,19 +170,19 @@ private struct CategoryRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Menu {
-                ForEach(0..<TaskStore.categoryColorCount, id: \.self) { index in
+                ForEach(0..<TaskStore.collectionColorCount, id: \.self) { index in
                     Button {
-                        store.setCategoryColor(category.name, color: index)
+                        store.setCollectionColor(id: collection.id, color: index)
                     } label: {
                         Label {
-                            Text(index == category.color ? "当前颜色" : "颜色 \(index + 1)")
+                            Text(index == collection.color ? "当前颜色" : "颜色 \(index + 1)")
                         } icon: {
-                            Image(nsImage: Self.swatch(Theme.categoryColor(index: index)))
+                            Image(nsImage: Self.swatch(Theme.collectionColor(index: index)))
                         }
                     }
                 }
             } label: {
-                Circle().fill(Theme.categoryColor(index: category.color)).frame(width: 12, height: 12)
+                Circle().fill(Theme.collectionColor(index: collection.color)).frame(width: 12, height: 12)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -184,30 +191,30 @@ private struct CategoryRow: View {
             TextField("名称", text: $name)
                 .textFieldStyle(.plain)
                 .onSubmit(commit)
-            let count = store.tasks.filter { $0.category == category.name }.count
+            let count = store.tasks.filter { $0.collectionID == collection.id && $0.isRoot }.count
             if count > 0 {
                 Text("\(count) 个任务")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Button { store.moveCategory(category.name, by: -1) } label: { Image(systemName: "chevron.up") }
+            Button { store.moveCollection(id: collection.id, by: -1) } label: { Image(systemName: "chevron.up") }
                 .buttonStyle(.borderless)
                 .disabled(isFirst)
                 .help("上移")
-            Button { store.moveCategory(category.name, by: 1) } label: { Image(systemName: "chevron.down") }
+            Button { store.moveCollection(id: collection.id, by: 1) } label: { Image(systemName: "chevron.down") }
                 .buttonStyle(.borderless)
                 .disabled(isLast)
                 .help("下移")
-            Button(role: .destructive) { store.removeCategory(category.name) } label: { Image(systemName: "trash") }
+            Button(role: .destructive) { store.removeCollection(id: collection.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
-                .help("删除分类，其中的任务变为未分类")
+                .help("删除集合，其中的任务保留")
         }
-        .onAppear { name = category.name }
-        .onChange(of: category.name) { _, new in name = new }
+        .onAppear { name = collection.name }
+        .onChange(of: collection.name) { _, new in name = new }
     }
 
     private func commit() {
-        if !store.renameCategory(category.name, to: name) { name = category.name }
+        if !store.renameCollection(id: collection.id, to: name) { name = collection.name }
     }
 
     /// Menu items only render images, not shapes.

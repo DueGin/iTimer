@@ -562,22 +562,27 @@ struct LevelChartCard: View {
 
 // MARK: - Tags
 
-/// Donut of time per category or per tag.
+/// Donut of time per collection or per tag.
 struct TagChartCard: View {
     enum Kind {
-        case category
+        case collection
         case tag
 
-        var title: String { self == .category ? "按分类" : "按标签" }
-        var placeholder: String { self == .category ? CategoryStats.uncategorized : TagStats.untagged }
+        var title: String { self == .collection ? "按集合" : "按标签" }
+        var placeholder: String { self == .collection ? CollectionStats.uncollected : TagStats.untagged }
     }
 
     var slices: [TagSlice]
     var kind: Kind = .tag
+    var collections: [TaskCollection] = []
     @State private var hover: String?
 
     private func color(_ key: String) -> Color {
-        kind == .category ? Theme.category(key == CategoryStats.uncategorized ? nil : key) : Theme.tag(key)
+        if kind == .collection {
+            if key == CollectionStats.uncollected { return .gray }
+            return collections.first { $0.name == key }.map { Theme.collectionColor(index: $0.color) } ?? .gray
+        }
+        return Theme.tag(key)
     }
 
     var body: some View {
@@ -585,7 +590,7 @@ struct TagChartCard: View {
             let total = slices.reduce(0) { $0 + $1.duration }
             ChartCard(
                 title: kind.title,
-                caption: kind == .category ? "每个任务只算进一个分类。悬停图例高亮对应扇区。" : "一个任务有多个标签时，每个标签都计全额。"
+                caption: kind == .collection ? "每个任务只算进一个集合。悬停图例高亮对应扇区。" : "一个任务有多个标签时，每个标签都计全额。"
             ) {
                 HStack(spacing: 16) {
                     ZStack {
@@ -614,7 +619,7 @@ struct TagChartCard: View {
                         }
                     }
                     .frame(width: 130, height: 130)
-                    .accessibilityIdentifier(kind == .category ? "category-chart" : "tag-chart")
+                    .accessibilityIdentifier(kind == .collection ? "collection-chart" : "tag-chart")
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(slices.prefix(6)) { slice in
                             HStack(spacing: 6) {
@@ -648,12 +653,12 @@ struct TagChartCard: View {
         } else {
             ChartCard(
                 title: kind.title,
-                caption: kind == .category ? "给任务选个分类，就能看到时间花在哪类事上。" : "给任务加上 #标签，按更细的维度看时间。"
+                caption: kind == .collection ? "在设置里新建集合，把任务归进去，就能看到时间花在哪一组上。" : "给任务加上 #标签，按更细的维度看时间。"
             ) {
                 HStack(spacing: 8) {
-                    Image(systemName: kind == .category ? "folder" : "number")
+                    Image(systemName: kind == .collection ? "folder" : "number")
                         .foregroundStyle(.tertiary)
-                    Text(kind == .category ? "例如「写周报 @工作」「跑步 @健康」" : "例如「写周报 #汇报」「跑步 #晨练」")
+                    Text(kind == .collection ? "例如把「写周报」「改 bug」都归入「本周交付」" : "例如「写周报 #汇报」「跑步 #晨练」")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

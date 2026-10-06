@@ -908,119 +908,192 @@ final class LabelTests: XCTestCase {
         return TaskStore(url: directory.appendingPathComponent("state.json"), now: t0)
     }
 
-    func testParserExtractsCategoryAndRoundTrips() {
-        let parsed = TitleParser.parse("写周报 @工作 #汇报 #周报")
+    func testParserExtractsTagsAndRoundTrips() {
+        let parsed = TitleParser.parse("写周报 #汇报 #周报")
         XCTAssertEqual(parsed.title, "写周报")
         XCTAssertEqual(parsed.tags, ["汇报", "周报"])
-        XCTAssertEqual(parsed.category, "工作")
-        XCTAssertEqual(TitleParser.input(title: parsed.title, tags: parsed.tags, category: parsed.category), "写周报 @工作 #汇报 #周报")
-        // a lone "@" stays in the title; the last category wins
+        XCTAssertEqual(TitleParser.input(title: parsed.title, tags: parsed.tags), "写周报 #汇报 #周报")
+        // a lone "#" stays in the title; "@" is no longer special
         XCTAssertEqual(TitleParser.parse("见 @ 老王").title, "见 @ 老王")
-        XCTAssertEqual(TitleParser.parse("a @学习 @生活").category, "生活")
+        XCTAssertEqual(TitleParser.parse("a @学习").title, "a @学习")
     }
 
-    func testStoreStartsWithDefaultCategoriesAndLegacyFilesGetThem() throws {
+    func testStoreStartsWithNoCollectionsAndLegacyFilesStayEmpty() throws {
         let store = makeStore()
-        XCTAssertEqual(store.categories.map(\.name), ["工作", "学习", "生活", "健康"])
+        XCTAssertTrue(store.collections.isEmpty)
 
-        let legacy = #"{"brainSplitThreshold":3,"tasks":[{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[]}]}"#
+        let legacy = #"{"brainSplitThreshold":3,"categories":[{"name":"工作","color":0}],"tasks":[{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[],"category":"工作"}]}"#
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let snapshot = try decoder.decode(StoreSnapshot.self, from: Data(legacy.utf8))
-        XCTAssertEqual(snapshot.categories, TaskCategory.defaults)
-        XCTAssertNil(snapshot.tasks[0].category)
+        XCTAssertTrue(snapshot.collections.isEmpty)
+        XCTAssertNil(snapshot.tasks[0].collectionID)
+        XCTAssertNil(snapshot.tasks[0].parentID)
     }
 
-    func testQuickInputAssignsCategoryCaseInsensitivelyAndCreatesNewOnes() {
+    func testCollectionsAreCreatedExplicitlyAndFiledByID() {
         let store = makeStore()
-        let known = store.addTask(title: "读论文 @学习 #AI", at: t0)!
-        XCTAssertEqual(known.category, "学习")
-        XCTAssertEqual(known.tags, ["AI"])
-        XCTAssertEqual(store.categories.count, 4)
+        XCTAssertNil(store.addCollection("  "), "empty names are refused")
+        XCTAssertNil(store.addCollection(CollectionStats.uncollected))
+        let work = store.addCollection("本周交付", at: t0)!
+        XCTAssertEqual(work.color, 0)
+        XCTAssertEqual(store.addCollection("本周交付")?.id, work.id, "names stay unique, case-insensitively")
+        XCTAssertEqual(store.addCollection("本周交付 ")?.id, work.id)
 
-        let fresh = store.addTask(title: "练琴 @爱好", at: t0)!
-        XCTAssertEqual(fresh.category, "爱好")
-        XCTAssertEqual(store.categories.last?.name, "爱好")
-        // next unused palette slot
-        XCTAssertEqual(store.categories.last?.color, 4)
+        let task = store.addTask(title: "写周报 #汇报", collectionID: work.id, at: t0)!
+        XCTAssertEqual(task.collectionID, work.id)
+        XCTAssertEqual(task.tags, ["汇报"])
+        XCTAssertNil(store.addTask(title: "孤儿", collectionID: UUID(), at: t0)?.collectionID, "unknown ids are dropped")
 
-        let again = store.addTask(title: "练琴2 @爱好", at: t0)!
-        XCTAssertEqual(again.category, "爱好")
-        XCTAssertEqual(store.categories.count, 5)
-        XCTAssertTrue(store.suggestions().contains { $0.contains("@") } == false, "open tasks are not suggested")
-        store.complete(id: known.id, at: t0.addingTimeInterval(60))
-        XCTAssertTrue(store.suggestions().contains("读论文 @学习 #AI"))
+        store.complete(id: task.id, at: t0.addingTimeInterval(60))
+        XCTAssertTrue(store.suggestions().contains("写周报 #汇报"))
     }
 
-    func testRetitleSetTagsAndSetCategory() {
+    func testRetitleAndTagsLeaveCollectionAlone() {
         let store = makeStore()
-        let task = store.addTask(title: "写周报", at: t0)!
-        XCTAssertTrue(store.retitle(id: task.id, input: "写月报 @工作 #汇报"))
+        let work = store.addCollection("工作", at: t0)!
+        let task = store.addTask(title: "写周报", collectionID: work.id, at: t0)!
+        XCTAssertTrue(store.retitle(id: task.id, input: "写月报 #汇报"))
         var current = store.tasks.first { $0.id == task.id }!
         XCTAssertEqual(current.title, "写月报")
-        XCTAssertEqual(current.category, "工作")
         XCTAssertEqual(current.tags, ["汇报"])
+        XCTAssertEqual(current.collectionID, work.id, "retitle no longer touches filing")
 
         store.toggleTag(id: task.id, "紧急")
         store.toggleTag(id: task.id, "汇报")
-        store.setCategory(id: task.id, nil)
+        store.setCollection(id: task.id, nil)
         current = store.tasks.first { $0.id == task.id }!
         XCTAssertEqual(current.tags, ["紧急"])
-        XCTAssertNil(current.category)
+        XCTAssertNil(current.collectionID)
         XCTAssertEqual(store.knownTags.first, "紧急")
 
-        XCTAssertFalse(store.retitle(id: task.id, input: "@工作 #只有标签"))
+        XCTAssertFalse(store.retitle(id: task.id, input: "#只有标签"))
     }
 
-    func testRenameAndRemoveCategoryUpdateTasks() {
+    func testRenameAndRemoveCollectionKeepTasks() {
         let store = makeStore()
-        let task = store.addTask(title: "写代码 @工作", at: t0)!
-        XCTAssertTrue(store.renameCategory("工作", to: "上班"))
-        XCTAssertEqual(store.tasks.first { $0.id == task.id }?.category, "上班")
-        XCTAssertFalse(store.renameCategory("上班", to: "学习"), "names stay unique")
-        XCTAssertFalse(store.renameCategory("上班", to: CategoryStats.uncategorized))
+        let work = store.addCollection("工作", at: t0)!
+        let study = store.addCollection("学习", at: t0)!
+        let task = store.addTask(title: "写代码", collectionID: work.id, at: t0)!
+        XCTAssertTrue(store.renameCollection(id: work.id, to: "上班"))
+        XCTAssertEqual(store.tasks.first { $0.id == task.id }?.collectionID, work.id)
+        XCTAssertFalse(store.renameCollection(id: work.id, to: "学习"), "names stay unique")
+        XCTAssertFalse(store.renameCollection(id: work.id, to: CollectionStats.uncollected))
 
-        store.removeCategory("上班")
-        XCTAssertNil(store.tasks.first { $0.id == task.id }?.category)
-        XCTAssertNil(store.category(named: "上班"))
+        store.removeCollection(id: work.id)
+        XCTAssertNil(store.tasks.first { $0.id == task.id }?.collectionID, "tasks survive, just unfiled")
+        XCTAssertNil(store.collection(id: work.id))
+        XCTAssertNotNil(store.collection(id: study.id))
 
-        // persisted
         let reloaded = TaskStore(url: store.url, now: t0)
-        XCTAssertEqual(reloaded.categories.map(\.name), ["学习", "生活", "健康"])
+        XCTAssertEqual(reloaded.collections.map(\.name), ["学习"])
+        XCTAssertNil(reloaded.tasks.first?.collectionID)
     }
 
-    func testScheduleMergesPickedLabelsWithTypedOnes() {
+    func testScheduleMergesPickedTagsAndCollection() {
         let store = makeStore()
+        let work = store.addCollection("工作", at: t0)!
         let item = store.addSchedule(
             title: "季度汇报 #PPT",
             tags: ["汇报"],
-            category: "工作",
+            collectionID: work.id,
             start: t0.addingTimeInterval(3600),
             plannedDuration: 3600,
             reminderLead: nil,
             at: t0
         )!
         XCTAssertEqual(item.tags, ["汇报", "PPT"])
-        XCTAssertEqual(item.category, "工作")
+        XCTAssertEqual(item.collectionID, work.id)
     }
 
-    func testCategoryStatsAndDigestFilter() {
+    func testSubtasksStayOneLevelAndFollowTheParent() {
         let store = makeStore()
-        let work = store.addTask(title: "写方案 @工作", at: t0)!
+        let work = store.addCollection("本周交付", at: t0)!
+        let parent = store.addTask(title: "写周报", collectionID: work.id, at: t0)!
+        let child = store.addSubtask(parentID: parent.id, title: "整理数据 #数据", at: t0.addingTimeInterval(10))!
+        XCTAssertEqual(child.parentID, parent.id)
+        XCTAssertEqual(child.collectionID, work.id, "a subtask inherits the collection")
+        XCTAssertEqual(store.subtasks(of: parent.id).map(\.id), [child.id])
+
+        XCTAssertNil(store.addSubtask(parentID: child.id, title: "孙任务", at: t0), "no grandchildren")
+        XCTAssertFalse(store.setParent(id: parent.id, child.id), "a parent with children cannot become a child")
+        XCTAssertFalse(store.setCollection(id: child.id, nil), "a subtask cannot be filed on its own")
+
+        let other = store.addCollection("生活", at: t0)!
+        XCTAssertTrue(store.setCollection(id: parent.id, other.id))
+        XCTAssertEqual(store.tasks.first { $0.id == child.id }?.collectionID, other.id)
+
         let stray = store.addTask(title: "杂事", at: t0)!
-        store.pause(id: work.id, at: t0.addingTimeInterval(600))
+        XCTAssertTrue(store.setParent(id: stray.id, parent.id))
+        XCTAssertEqual(store.tasks.first { $0.id == stray.id }?.collectionID, other.id)
+        XCTAssertTrue(store.setParent(id: stray.id, nil))
+        XCTAssertNil(store.tasks.first { $0.id == stray.id }?.parentID)
+        XCTAssertEqual(store.tasks.first { $0.id == stray.id }?.collectionID, other.id, "leaving keeps the filing")
+
+        store.delete(id: parent.id)
+        XCTAssertNil(store.tasks.first { $0.id == parent.id })
+        XCTAssertNil(store.tasks.first { $0.id == child.id }, "deleting a parent deletes its subtasks")
+        XCTAssertNotNil(store.tasks.first { $0.id == stray.id })
+    }
+
+    func testCollectionStatsAndDigestFilter() {
+        let store = makeStore()
+        let work = store.addCollection("工作", at: t0)!
+        let filed = store.addTask(title: "写方案", collectionID: work.id, at: t0)!
+        let stray = store.addTask(title: "杂事", at: t0)!
+        store.pause(id: filed.id, at: t0.addingTimeInterval(600))
         store.pause(id: stray.id, at: t0.addingTimeInterval(300))
 
         let window = DateInterval(start: t0, end: t0.addingTimeInterval(3600))
-        let slices = CategoryStats.slices(tasks: store.tasks, window: window, now: window.end)
-        XCTAssertEqual(slices.map(\.tag), ["工作", CategoryStats.uncategorized])
+        let slices = CollectionStats.slices(tasks: store.tasks, collections: store.collections, window: window, now: window.end)
+        XCTAssertEqual(slices.map(\.tag), ["工作", CollectionStats.uncollected])
         XCTAssertEqual(slices[0].duration, 600, accuracy: 0.001)
 
         let cache = DigestCache()
-        let filtered = cache.digest(store: store, range: .all, category: "工作")
-        XCTAssertEqual(filtered.report.tasks.map(\.id), [work.id])
-        let loose = cache.digest(store: store, range: .all, category: CategoryStats.uncategorized)
+        let filtered = cache.digest(store: store, range: .all, collectionID: work.id)
+        XCTAssertEqual(filtered.report.tasks.map(\.id), [filed.id])
+        XCTAssertEqual(filtered.collections.map(\.tag), ["工作"])
+        let loose = cache.digest(store: store, range: .all, collectionID: CollectionStats.uncollectedID)
         XCTAssertEqual(loose.report.tasks.map(\.id), [stray.id])
         XCTAssertEqual(cache.digest(store: store, range: .all).report.tasks.count, 2)
+    }
+
+    func testNoteAndCommentsPersistAndLegacyTasksHaveNone() throws {
+        let legacy = #"{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let old = try decoder.decode(TaskItem.self, from: Data(legacy.utf8))
+        XCTAssertEqual(old.note, "")
+        XCTAssertTrue(old.comments.isEmpty)
+        XCTAssertFalse(old.hasJournal)
+
+        let store = makeStore()
+        let task = store.addTask(title: "排查线上问题", at: t0)!
+        XCTAssertNil(store.addComment(id: task.id, text: "   \n  ", at: t0), "blank comments are refused")
+        let first = store.addComment(id: task.id, text: "复现了，只在 iOS 17 出现", at: t0.addingTimeInterval(60))!
+        let second = store.addComment(id: task.id, text: "  定位到缓存键没带版本号  ", at: t0.addingTimeInterval(120))!
+        XCTAssertEqual(second.text, "定位到缓存键没带版本号")
+        XCTAssertTrue(store.setNote(id: task.id, "结论：缓存键加版本号\n\n\n下次：补回归测试  "))
+
+        var current = store.tasks.first { $0.id == task.id }!
+        XCTAssertEqual(current.note, "结论：缓存键加版本号\n\n下次：补回归测试", "blank runs collapse to one")
+        XCTAssertEqual(current.comments.map(\.id), [first.id, second.id], "oldest first")
+        XCTAssertEqual(current.comments[0].createdAt, t0.addingTimeInterval(60))
+        XCTAssertTrue(current.hasJournal)
+
+        XCTAssertTrue(store.deleteComment(id: task.id, commentID: first.id))
+        XCTAssertFalse(store.deleteComment(id: task.id, commentID: first.id))
+        current = store.tasks.first { $0.id == task.id }!
+        XCTAssertEqual(current.comments.map(\.id), [second.id])
+
+        let reloaded = TaskStore(url: store.url, now: t0)
+        let saved = reloaded.tasks.first { $0.id == task.id }!
+        XCTAssertEqual(saved.note, "结论：缓存键加版本号\n\n下次：补回归测试")
+        XCTAssertEqual(saved.comments.map(\.text), ["定位到缓存键没带版本号"])
+
+        XCTAssertTrue(store.setNote(id: task.id, "步骤：\n  - 清缓存  \n  - 重启"))
+        XCTAssertEqual(store.tasks.first { $0.id == task.id }?.note, "步骤：\n  - 清缓存\n  - 重启", "indentation survives")
+        XCTAssertTrue(store.setNote(id: task.id, "  "))
+        XCTAssertEqual(store.tasks.first { $0.id == task.id }?.note, "")
     }
 }

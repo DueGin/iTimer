@@ -45,6 +45,20 @@ public enum BrainSplitDegree: String, Codable, Equatable, Sendable {
     }
 }
 
+/// One dated line of progress on a task. Newest entries stay at the end
+/// of the task's `comments`; the note is the standing conclusion.
+public struct TaskComment: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var text: String
+    public var createdAt: Date
+
+    public init(id: UUID = UUID(), text: String, createdAt: Date) {
+        self.id = id
+        self.text = text
+        self.createdAt = createdAt
+    }
+}
+
 public struct TimeSegment: Codable, Equatable, Sendable {
     public var startedAt: Date
     public var endedAt: Date?
@@ -74,8 +88,10 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     public var segments: [TimeSegment]
     public var completedAt: Date?
     public var tags: [String]
-    /// Name of one of the store's `categories`; nil = 未分类.
-    public var category: String?
+    /// Collection this task belongs to. nil = not filed in any collection.
+    public var collectionID: UUID?
+    /// Parent task. Subtasks are one level deep: a child never has children.
+    public var parentID: UUID?
     /// Identifiers of the matching events in the local calendar, aligned
     /// with `calendarRanges(asOf:)` — one per stretch of actual timing.
     public var calendarEventIDs: [String]
@@ -87,6 +103,11 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     /// How long before `scheduledStart` to remind. nil = no reminders,
     /// 0 = at the start time only.
     public var reminderLead: TimeInterval?
+    /// Standing note: the conclusion, the constraint, what to remember.
+    /// Empty means none.
+    public var note: String
+    /// Dated progress entries, oldest first.
+    public var comments: [TaskComment]
 
     public init(
         id: UUID = UUID(),
@@ -95,11 +116,14 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments: [TimeSegment] = [],
         completedAt: Date? = nil,
         tags: [String] = [],
-        category: String? = nil,
+        collectionID: UUID? = nil,
+        parentID: UUID? = nil,
         calendarEventIDs: [String] = [],
         scheduledStart: Date? = nil,
         plannedDuration: TimeInterval? = nil,
-        reminderLead: TimeInterval? = nil
+        reminderLead: TimeInterval? = nil,
+        note: String = "",
+        comments: [TaskComment] = []
     ) {
         self.id = id
         self.title = title
@@ -107,16 +131,19 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         self.segments = segments
         self.completedAt = completedAt
         self.tags = tags
-        self.category = category
+        self.collectionID = collectionID
+        self.parentID = parentID
         self.calendarEventIDs = calendarEventIDs
         self.scheduledStart = scheduledStart
         self.plannedDuration = plannedDuration
         self.reminderLead = reminderLead
+        self.note = note
+        self.comments = comments
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, segments, completedAt, tags, category, calendarEventIDs
-        case scheduledStart, plannedDuration, reminderLead
+        case id, title, createdAt, segments, completedAt, tags, collectionID, parentID, calendarEventIDs
+        case scheduledStart, plannedDuration, reminderLead, note, comments
     }
 
     /// Pre-1.4.2 single event id; read once and folded into `calendarEventIDs`.
@@ -132,7 +159,8 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments = try container.decode([TimeSegment].self, forKey: .segments)
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
-        category = try container.decodeIfPresent(String.self, forKey: .category)
+        collectionID = try container.decodeIfPresent(UUID.self, forKey: .collectionID)
+        parentID = try container.decodeIfPresent(UUID.self, forKey: .parentID)
         if let ids = try container.decodeIfPresent([String].self, forKey: .calendarEventIDs) {
             calendarEventIDs = ids
         } else {
@@ -142,7 +170,17 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         scheduledStart = try container.decodeIfPresent(Date.self, forKey: .scheduledStart)
         plannedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .plannedDuration)
         reminderLead = try container.decodeIfPresent(TimeInterval.self, forKey: .reminderLead)
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        comments = try container.decodeIfPresent([TaskComment].self, forKey: .comments) ?? []
     }
+
+    /// True when there is a note or at least one comment worth opening.
+    public var hasJournal: Bool {
+        !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !comments.isEmpty
+    }
+
+    /// A top-level task. Subtasks are one level deep.
+    public var isRoot: Bool { parentID == nil }
 
     public var isCompleted: Bool { completedAt != nil }
 
