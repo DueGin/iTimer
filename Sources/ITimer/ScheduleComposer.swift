@@ -14,19 +14,17 @@ struct ScheduleDraft: Equatable {
     var duration: TimeInterval? = ScheduleOptions.defaultDuration
     var reminderLead: TimeInterval? = ScheduleOptions.defaultReminderLead
     var tags: [String] = []
-    var collectionID: UUID?
-    /// Set when this schedule is a subtask. Not editable here — the parent
-    /// owns the collection, and nesting stays one level deep.
+    /// Set when this schedule is a subtask. Not editable here — nesting
+    /// stays one level deep.
     var parentID: UUID?
 
     /// `title` may carry `#标签` from the quick field; they move into the picker.
-    static func new(title: String = "", collectionID: UUID? = nil, asOf now: Date) -> ScheduleDraft {
+    static func new(title: String = "", asOf now: Date) -> ScheduleDraft {
         let parsed = TitleParser.parse(title)
         return ScheduleDraft(
             title: parsed.title,
             start: ScheduleOptions.suggestedStart(after: now),
-            tags: parsed.tags,
-            collectionID: collectionID
+            tags: parsed.tags
         )
     }
 
@@ -40,7 +38,6 @@ struct ScheduleDraft: Equatable {
             duration: task.plannedDuration,
             reminderLead: task.reminderLead ?? (task.isUndated ? ScheduleOptions.defaultReminderLead : nil),
             tags: task.tags,
-            collectionID: task.collectionID,
             parentID: task.parentID
         )
     }
@@ -71,8 +68,6 @@ struct ScheduleComposer: View {
     var onSave: () -> Void
     var onStartNow: () -> Void
     var onCancel: () -> Void
-    var collections: [TaskCollection] = TaskStore.shared.collections
-    var onCreateCollection: (String) -> TaskCollection? = { TaskStore.shared.addCollection($0) }
     var knownTags: [String] = TaskStore.shared.knownTags
     @FocusState private var titleFocused: Bool
     /// Inline day list. Not a Menu/Picker: those take focus and the
@@ -160,12 +155,6 @@ struct ScheduleComposer: View {
                         selection: $draft.reminderLead
                     )
                     .accessibilityIdentifier("schedule-reminder")
-                }
-            }
-            if draft.parentID == nil {
-                divider
-                row("集合") {
-                    CollectionPicker(selection: $draft.collectionID, collections: collections, onCreate: onCreateCollection)
                 }
             }
             divider

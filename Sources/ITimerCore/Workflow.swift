@@ -135,7 +135,7 @@ public struct Workflow: Codable, Equatable, Identifiable, Sendable {
         viewport = try container.decodeIfPresent(WorkflowViewport.self, forKey: .viewport)
     }
 
-    /// Same rules as collection names: one line, short enough for a sidebar.
+    /// One line, short enough for a sidebar.
     public static func clean(_ name: String) -> String {
         let collapsed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isWhitespace)

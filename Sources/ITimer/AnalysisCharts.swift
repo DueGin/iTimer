@@ -141,7 +141,7 @@ private struct ActiveTaskList: View {
     var body: some View {
         ForEach(spans.prefix(5)) { span in
             HStack(spacing: 6) {
-                Circle().fill(Theme.lane(span)).frame(width: 6, height: 6)
+                Circle().fill(Theme.lane(tags: span.tags)).frame(width: 6, height: 6)
                 Text(span.title).lineLimit(1)
             }
         }
@@ -188,7 +188,7 @@ struct LaneChartCard: View {
                         y: .value("任务", span.title),
                         height: .fixed(14)
                     )
-                    .foregroundStyle(Theme.lane(span).opacity(opacity(span, active: active)))
+                    .foregroundStyle(Theme.lane(tags: span.tags).opacity(opacity(span, active: active)))
                     .cornerRadius(4)
                 }
                 if let hover {
@@ -562,35 +562,21 @@ struct LevelChartCard: View {
 
 // MARK: - Tags
 
-/// Donut of time per collection or per tag.
+/// Donut of time per tag.
 struct TagChartCard: View {
-    enum Kind {
-        case collection
-        case tag
-
-        var title: String { self == .collection ? "按集合" : "按标签" }
-        var placeholder: String { self == .collection ? CollectionStats.uncollected : TagStats.untagged }
-    }
-
     var slices: [TagSlice]
-    var kind: Kind = .tag
-    var collections: [TaskCollection] = []
     @State private var hover: String?
 
     private func color(_ key: String) -> Color {
-        if kind == .collection {
-            if key == CollectionStats.uncollected { return .gray }
-            return collections.first { $0.name == key }.map { Theme.collectionColor(index: $0.color) } ?? .gray
-        }
-        return Theme.tag(key)
+        Theme.tag(key)
     }
 
     var body: some View {
-        if slices.contains(where: { $0.tag != kind.placeholder }) {
+        if slices.contains(where: { $0.tag != TagStats.untagged }) {
             let total = slices.reduce(0) { $0 + $1.duration }
             ChartCard(
-                title: kind.title,
-                caption: kind == .collection ? "每个任务只算进一个集合。悬停图例高亮对应扇区。" : "一个任务有多个标签时，每个标签都计全额。"
+                title: "按标签",
+                caption: "一个任务有多个标签时，每个标签都计全额。"
             ) {
                 HStack(spacing: 16) {
                     ZStack {
@@ -619,7 +605,7 @@ struct TagChartCard: View {
                         }
                     }
                     .frame(width: 130, height: 130)
-                    .accessibilityIdentifier(kind == .collection ? "collection-chart" : "tag-chart")
+                    .accessibilityIdentifier("tag-chart")
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(slices.prefix(6)) { slice in
                             HStack(spacing: 6) {
@@ -652,13 +638,13 @@ struct TagChartCard: View {
             }
         } else {
             ChartCard(
-                title: kind.title,
-                caption: kind == .collection ? "在设置里新建集合，把任务归进去，就能看到时间花在哪一组上。" : "给任务加上 #标签，按更细的维度看时间。"
+                title: "按标签",
+                caption: "给任务加上 #标签，按更细的维度看时间。"
             ) {
                 HStack(spacing: 8) {
-                    Image(systemName: kind == .collection ? "folder" : "number")
+                    Image(systemName: "number")
                         .foregroundStyle(.tertiary)
-                    Text(kind == .collection ? "例如把「写周报」「改 bug」都归入「本周交付」" : "例如「写周报 #汇报」「跑步 #晨练」")
+                    Text("例如「写周报 #汇报」「跑步 #晨练」")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

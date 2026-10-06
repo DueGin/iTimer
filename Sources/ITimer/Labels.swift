@@ -1,25 +1,7 @@
 import ITimerCore
 import SwiftUI
 
-/// A task's collection: colored dot + name.
-struct CollectionPill: View {
-    var collection: TaskCollection
-
-    var body: some View {
-        let color = Theme.collectionColor(index: collection.color)
-        HStack(spacing: 3) {
-            Circle().fill(color).frame(width: 5, height: 5)
-            Text(collection.name)
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 1)
-        .background(color.opacity(0.14), in: Capsule())
-    }
-}
-
-/// A free-form tag, lighter than a collection so the two read apart.
+/// A free-form tag.
 struct TagPill: View {
     var tag: String
 
@@ -30,41 +12,16 @@ struct TagPill: View {
     }
 }
 
-/// Collection, parent and tag submenus for a task's context menu.
-/// Menus are safe in the MenuBarExtra panel but cannot take typing, so a
-/// new tag goes through `onEditLabels` and a new collection through
-/// `onNewCollection` (the composer, which names it inline).
+/// Parent and tag submenus for a task's context menu. Menus are safe in
+/// the MenuBarExtra panel but cannot take typing, so a new tag goes
+/// through `onEditLabels`.
 struct LabelMenus: View {
     var task: TaskItem
     var store: TaskStore
     var onEditLabels: (() -> Void)?
     var onAddSubtask: (() -> Void)?
-    var onNewCollection: (() -> Void)?
 
     var body: some View {
-        if task.isRoot {
-            Menu("集合") {
-                if store.collections.isEmpty && onNewCollection == nil {
-                    Button("还没有集合") {}
-                        .disabled(true)
-                }
-                ForEach(store.collections) { collection in
-                    Toggle(collection.name, isOn: Binding(
-                        get: { task.collectionID == collection.id },
-                        set: { store.setCollection(id: task.id, $0 ? collection.id : nil) }
-                    ))
-                }
-                if onNewCollection != nil || task.collectionID != nil {
-                    if !store.collections.isEmpty { Divider() }
-                    if let onNewCollection {
-                        Button("新建集合…", action: onNewCollection)
-                    }
-                    if task.collectionID != nil {
-                        Button("移出集合") { store.setCollection(id: task.id, nil) }
-                    }
-                }
-            }
-        }
         Menu("子任务") {
             if let parent = store.parent(of: task) {
                 Button("属于「\(parent.title)」") {}
@@ -157,97 +114,6 @@ struct WorkflowWaitPill: View {
     }
 }
 
-/// Collection chips for the schedule composer. Tapping the selected one
-/// clears it. The trailing chip names a new collection in place and
-/// files the task into it, so filing never detours through Settings.
-struct CollectionPicker: View {
-    @Binding var selection: UUID?
-    var collections: [TaskCollection]
-    var onCreate: (String) -> TaskCollection?
-    @State private var naming = false
-    @State private var name = ""
-    @FocusState private var nameFocused: Bool
-
-    var body: some View {
-        FlowLayout(spacing: 4) {
-            ForEach(collections) { collection in
-                let selected = selection == collection.id
-                let color = Theme.collectionColor(index: collection.color)
-                Button {
-                    selection = selected ? nil : collection.id
-                } label: {
-                    HStack(spacing: 4) {
-                        Circle().fill(color).frame(width: 6, height: 6)
-                        Text(collection.name)
-                    }
-                    .font(.caption.weight(selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? color : Color.primary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(selected ? color.opacity(0.16) : Color.primary.opacity(0.05), in: Capsule())
-                    .overlay { if selected { Capsule().strokeBorder(color.opacity(0.5), lineWidth: 1) } }
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-            creator
-        }
-        .accessibilityIdentifier("collection-picker")
-    }
-
-    @ViewBuilder
-    private var creator: some View {
-        if naming {
-            TextField("集合名，回车创建", text: $name)
-                .textFieldStyle(.plain)
-                .font(.caption)
-                .frame(width: 104)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.05), in: Capsule())
-                .overlay { Capsule().strokeBorder(Theme.focused.opacity(0.5), lineWidth: 1) }
-                .focused($nameFocused)
-                .onSubmit(create)
-                .onExitCommand(perform: cancel)
-                .onChange(of: nameFocused) { _, focused in
-                    if !focused && name.trimmingCharacters(in: .whitespaces).isEmpty { cancel() }
-                }
-                .accessibilityIdentifier("collection-new-name")
-        } else {
-            Button {
-                naming = true
-                nameFocused = true
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "plus").font(.system(size: 8, weight: .bold))
-                    Text(collections.isEmpty ? "新建集合" : "新集合")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .help("新建一个集合，并把这个任务归进去")
-            .accessibilityIdentifier("collection-new")
-        }
-    }
-
-    private func create() {
-        guard let collection = onCreate(name) else { return }
-        selection = collection.id
-        cancel()
-    }
-
-    private func cancel() {
-        name = ""
-        naming = false
-    }
-}
-
 /// Selected tags (tap × to drop), a few recent ones to add, and a field
 /// for new ones.
 struct TagEditor: View {
@@ -305,7 +171,7 @@ struct TagEditor: View {
     }
 
     private func commit() {
-        let tag = TaskCollection.clean(input)
+        let tag = TitleParser.cleanTag(input)
         input = ""
         guard !tag.isEmpty else { return }
         tags = TitleParser.merge(tags, [tag])

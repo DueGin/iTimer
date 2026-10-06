@@ -37,7 +37,7 @@ struct WorkflowCard: View {
     var body: some View {
         HStack(spacing: 0) {
             Capsule()
-                .fill(task.collectionID != nil ? Theme.collection(task.collectionID) : stateColor.opacity(0.7))
+                .fill(stateColor.opacity(0.7))
                 .frame(width: 3)
                 .padding(.vertical, 12)
             VStack(alignment: .leading, spacing: 0) {
@@ -310,9 +310,6 @@ struct WorkflowTaskPicker: View {
                     Text(task.title)
                         .lineLimit(1)
                     HStack(spacing: 5) {
-                        if let collection = store.collection(id: task.collectionID) {
-                            CollectionPill(collection: collection)
-                        }
                         if let other = store.workflow(containing: task.id) {
                             Text("在「\(other.name)」中，会移过来")
                                 .font(.caption2)

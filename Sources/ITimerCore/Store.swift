@@ -6,7 +6,6 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
     public var brainSplitThreshold: Int
     public var tasks: [TaskItem]
     public var calendarSyncEnabled: Bool
-    public var collections: [TaskCollection]
     public var workflows: [Workflow]
 
     public init(
@@ -14,19 +13,17 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
         brainSplitThreshold: Int,
         tasks: [TaskItem],
         calendarSyncEnabled: Bool = false,
-        collections: [TaskCollection] = [],
         workflows: [Workflow] = []
     ) {
         self.version = version
         self.brainSplitThreshold = brainSplitThreshold
         self.tasks = tasks
         self.calendarSyncEnabled = calendarSyncEnabled
-        self.collections = collections
         self.workflows = workflows
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, brainSplitThreshold, tasks, calendarSyncEnabled, collections, workflows
+        case version, brainSplitThreshold, tasks, calendarSyncEnabled, workflows
     }
 
     public init(from decoder: Decoder) throws {
@@ -35,7 +32,6 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
         brainSplitThreshold = try container.decode(Int.self, forKey: .brainSplitThreshold)
         tasks = try container.decode([TaskItem].self, forKey: .tasks)
         calendarSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .calendarSyncEnabled) ?? false
-        collections = try container.decodeIfPresent([TaskCollection].self, forKey: .collections) ?? []
         workflows = try container.decodeIfPresent([Workflow].self, forKey: .workflows) ?? []
     }
 }
@@ -66,8 +62,6 @@ public final class TaskStore {
     public private(set) var tasks: [TaskItem]
     public private(set) var brainSplitThreshold: Int
     public private(set) var calendarSyncEnabled: Bool
-    /// User-created collections, in display order. Empty until the user makes one.
-    public private(set) var collections: [TaskCollection]
     /// User-created workflow canvases, in sidebar order.
     public private(set) var workflows: [Workflow]
     public private(set) var now: Date
@@ -95,7 +89,6 @@ public final class TaskStore {
         self.tasks = loaded.tasks
         self.brainSplitThreshold = loaded.brainSplitThreshold
         self.calendarSyncEnabled = loaded.calendarSyncEnabled
-        self.collections = loaded.collections
         self.workflows = loaded.workflows
         self.lastError = loaded.error
     }
@@ -183,15 +176,6 @@ public final class TaskStore {
             }
         }
         return result
-    }
-
-    public func collection(id: UUID?) -> TaskCollection? {
-        guard let id else { return nil }
-        return collections.first { $0.id == id }
-    }
-
-    public func collection(named name: String) -> TaskCollection? {
-        collections.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Direct children of a task, oldest first. Subtasks are one level deep.
@@ -298,7 +282,6 @@ public final class TaskStore {
     @discardableResult
     public func addTask(
         title: String,
-        collectionID: UUID? = nil,
         parentID: UUID? = nil,
         at now: Date? = nil
     ) -> TaskItem? {
@@ -316,7 +299,6 @@ public final class TaskStore {
             createdAt: stamp,
             segments: [TimeSegment(startedAt: stamp)],
             tags: parsed.tags,
-            collectionID: parent?.collectionID ?? resolvedCollection(collectionID),
             parentID: parent?.id
         )
         tasks.insert(task, at: 0)
@@ -329,13 +311,12 @@ public final class TaskStore {
     /// Add a schedule. It does not start timing — not even once its start
     /// time passes; the user starts it explicitly via `resume(id:)`.
     /// `start` nil = time to be decided; such a schedule has no reminder.
-    /// `tags` add to whatever `#` the title carries. A subtask inherits its
-    /// parent's collection and cannot itself be a parent.
+    /// `tags` add to whatever `#` the title carries. A subtask cannot itself
+    /// be a parent.
     @discardableResult
     public func addSchedule(
         title: String,
         tags: [String] = [],
-        collectionID: UUID? = nil,
         parentID: UUID? = nil,
         start: Date?,
         plannedDuration: TimeInterval?,
@@ -351,7 +332,6 @@ public final class TaskStore {
             title: String(parsed.title.prefix(80)),
             createdAt: stamp,
             tags: TitleParser.merge(tags, parsed.tags),
-            collectionID: parent?.collectionID ?? resolvedCollection(collectionID),
             parentID: parent?.id,
             scheduledStart: start,
             plannedDuration: plannedDuration.map { max(60, $0) },
@@ -478,7 +458,7 @@ public final class TaskStore {
     @discardableResult
     public func setTags(id: UUID, _ tags: [String]) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
-        let cleaned = TitleParser.merge(tags.map(TaskCollection.clean).filter { !$0.isEmpty }, [])
+        let cleaned = TitleParser.merge(tags.map(TitleParser.cleanTag).filter { !$0.isEmpty }, [])
         guard cleaned != tasks[index].tags else { return true }
         tasks[index].tags = cleaned
         save()
@@ -549,26 +529,9 @@ public final class TaskStore {
         return String(collapsed.joined(separator: "\n").prefix(2000))
     }
 
-    /// Files a task (and its subtasks) into a collection. nil removes it.
-    /// An unknown id is ignored. A subtask cannot be filed on its own —
-    /// it follows its parent.
-    @discardableResult
-    public func setCollection(id: UUID, _ collectionID: UUID?) -> Bool {
-        guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].parentID == nil else { return false }
-        let resolved = resolvedCollection(collectionID)
-        guard resolved != tasks[index].collectionID else { return true }
-        tasks[index].collectionID = resolved
-        for child in tasks.indices where tasks[child].parentID == id {
-            tasks[child].collectionID = resolved
-        }
-        save()
-        syncTask(id: id)
-        return true
-    }
-
     /// Makes `id` a subtask of `parentID`, or a top-level task when nil.
     /// Refuses a parent that is itself a subtask, or a task that already
-    /// has children — nesting stays one level deep. Filing follows the parent.
+    /// has children — nesting stays one level deep.
     @discardableResult
     public func setParent(id: UUID, _ parentID: UUID?) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
@@ -582,7 +545,6 @@ public final class TaskStore {
         guard let parent = resolvedParent(parentID), parent.id != id else { return false }
         guard tasks[index].parentID != parent.id else { return true }
         tasks[index].parentID = parent.id
-        tasks[index].collectionID = parent.collectionID
         save()
         syncTask(id: id)
         return true
@@ -592,69 +554,6 @@ public final class TaskStore {
     @discardableResult
     public func addSubtask(parentID: UUID, title: String, at now: Date? = nil) -> TaskItem? {
         addTask(title: title, parentID: parentID, at: now)
-    }
-
-    // MARK: - Collections
-
-    /// Adds a collection (next palette color). An existing name returns
-    /// the existing one. Empty names are refused — collections are created
-    /// on purpose, never inferred from a task title.
-    @discardableResult
-    public func addCollection(_ name: String, at now: Date? = nil) -> TaskCollection? {
-        let cleaned = TaskCollection.clean(name)
-        guard !cleaned.isEmpty, cleaned != CollectionStats.uncollected else { return nil }
-        if let existing = collection(named: cleaned) { return existing }
-        let used = Set(collections.map(\.color))
-        let color = (0..<Self.collectionColorCount).first { !used.contains($0) } ?? collections.count % Self.collectionColorCount
-        let collection = TaskCollection(name: cleaned, color: color, createdAt: now ?? self.now)
-        collections.append(collection)
-        save()
-        return collection
-    }
-
-    @discardableResult
-    public func renameCollection(id: UUID, to new: String) -> Bool {
-        let cleaned = TaskCollection.clean(new)
-        guard !cleaned.isEmpty, cleaned != CollectionStats.uncollected,
-              let index = collections.firstIndex(where: { $0.id == id }) else { return false }
-        if cleaned == collections[index].name { return true }
-        guard collection(named: cleaned) == nil else { return false }
-        collections[index].name = cleaned
-        save()
-        return true
-    }
-
-    /// Removes the collection. Its tasks stay, just unfiled.
-    public func removeCollection(id: UUID) {
-        guard let index = collections.firstIndex(where: { $0.id == id }) else { return }
-        collections.remove(at: index)
-        let affected = tasks.indices.filter { tasks[$0].collectionID == id }
-        for task in affected { tasks[task].collectionID = nil }
-        save()
-        affected.forEach { syncTask(id: tasks[$0].id) }
-    }
-
-    public func setCollectionColor(id: UUID, color: Int) {
-        guard let index = collections.firstIndex(where: { $0.id == id }), collections[index].color != color else { return }
-        collections[index].color = color
-        save()
-    }
-
-    public func moveCollection(id: UUID, by offset: Int) {
-        guard let index = collections.firstIndex(where: { $0.id == id }) else { return }
-        let target = index + offset
-        guard collections.indices.contains(target) else { return }
-        collections.swapAt(index, target)
-        save()
-    }
-
-    /// Size of the app's collection palette; colors cycle past it.
-    public static let collectionColorCount = 8
-
-    /// A collection id that still exists, or nil.
-    private func resolvedCollection(_ id: UUID?) -> UUID? {
-        guard let id, collections.contains(where: { $0.id == id }) else { return nil }
-        return id
     }
 
     /// A parent that can still take children: it exists and is itself a root.
@@ -781,7 +680,7 @@ public final class TaskStore {
 
     /// A new step drawn on the canvas: an undated schedule (it waits to be
     /// started like any other), placed at the point. With `upstream` it is
-    /// wired after that task and filed in the same collection.
+    /// wired after that task.
     @discardableResult
     public func addWorkflowStep(
         title: String,
@@ -792,10 +691,8 @@ public final class TaskStore {
         at now: Date? = nil
     ) -> TaskItem? {
         guard workflow(id: workflowID) != nil else { return nil }
-        let collectionID = upstream.flatMap { id in tasks.first { $0.id == id }?.collectionID }
         guard let task = addSchedule(
             title: title,
-            collectionID: collectionID,
             start: nil,
             plannedDuration: nil,
             reminderLead: nil,
@@ -962,7 +859,6 @@ public final class TaskStore {
             brainSplitThreshold: brainSplitThreshold,
             tasks: tasks,
             calendarSyncEnabled: calendarSyncEnabled,
-            collections: collections,
             workflows: workflows
         )
         do {
@@ -982,7 +878,6 @@ public final class TaskStore {
         var tasks: [TaskItem]
         var brainSplitThreshold: Int
         var calendarSyncEnabled: Bool
-        var collections: [TaskCollection] = []
         var workflows: [Workflow] = []
         var error: String?
     }
@@ -1004,7 +899,6 @@ public final class TaskStore {
                 tasks: snapshot.tasks,
                 brainSplitThreshold: BrainSplitRules.clamp(snapshot.brainSplitThreshold),
                 calendarSyncEnabled: snapshot.calendarSyncEnabled,
-                collections: snapshot.collections,
                 // Nodes for tasks that are gone would draw as empty cards.
                 workflows: snapshot.workflows.map { $0.pruned(keeping: Set(snapshot.tasks.map(\.id))) },
                 error: nil

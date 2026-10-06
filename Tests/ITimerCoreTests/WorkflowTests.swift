@@ -196,16 +196,14 @@ final class WorkflowTests: XCTestCase {
     }
 
     @MainActor
-    func testStepAfterUpstreamIsWiredAndFiledAlongside() throws {
+    func testStepAfterUpstreamIsWired() throws {
         let store = makeStore()
-        let collection = try XCTUnwrap(store.addCollection("副业"))
         let flow = try XCTUnwrap(store.addWorkflow("上架"))
-        let first = try XCTUnwrap(store.addSchedule(title: "截图", collectionID: collection.id, start: nil, plannedDuration: nil, reminderLead: nil, at: t0))
+        let first = try XCTUnwrap(store.addSchedule(title: "截图", start: nil, plannedDuration: nil, reminderLead: nil, at: t0))
         XCTAssertTrue(store.place(taskID: first.id, in: flow.id, x: 0, y: 0))
         let next = try XCTUnwrap(store.addWorkflowStep(title: "提交审核 #上架", in: flow.id, x: 280, y: 0, after: first.id, at: t0))
         XCTAssertTrue(next.isUndated, "a new step waits to be started")
         XCTAssertEqual(next.tags, ["上架"])
-        XCTAssertEqual(next.collectionID, collection.id)
         XCTAssertEqual(store.workflow(id: flow.id)?.upstream(of: next.id), [first.id])
         XCTAssertNil(store.addWorkflowStep(title: "  ", in: flow.id, x: 0, y: 0))
         XCTAssertNil(store.addWorkflowStep(title: "无处安放", in: UUID(), x: 0, y: 0))

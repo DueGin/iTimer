@@ -88,8 +88,6 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     public var segments: [TimeSegment]
     public var completedAt: Date?
     public var tags: [String]
-    /// Collection this task belongs to. nil = not filed in any collection.
-    public var collectionID: UUID?
     /// Parent task. Subtasks are one level deep: a child never has children.
     public var parentID: UUID?
     /// Identifiers of the matching events in the local calendar, aligned
@@ -116,7 +114,6 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments: [TimeSegment] = [],
         completedAt: Date? = nil,
         tags: [String] = [],
-        collectionID: UUID? = nil,
         parentID: UUID? = nil,
         calendarEventIDs: [String] = [],
         scheduledStart: Date? = nil,
@@ -131,7 +128,6 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         self.segments = segments
         self.completedAt = completedAt
         self.tags = tags
-        self.collectionID = collectionID
         self.parentID = parentID
         self.calendarEventIDs = calendarEventIDs
         self.scheduledStart = scheduledStart
@@ -142,7 +138,7 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, segments, completedAt, tags, collectionID, parentID, calendarEventIDs
+        case id, title, createdAt, segments, completedAt, tags, parentID, calendarEventIDs
         case scheduledStart, plannedDuration, reminderLead, note, comments
     }
 
@@ -159,7 +155,6 @@ public struct TaskItem: Codable, Identifiable, Equatable, Sendable {
         segments = try container.decode([TimeSegment].self, forKey: .segments)
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
-        collectionID = try container.decodeIfPresent(UUID.self, forKey: .collectionID)
         parentID = try container.decodeIfPresent(UUID.self, forKey: .parentID)
         if let ids = try container.decodeIfPresent([String].self, forKey: .calendarEventIDs) {
             calendarEventIDs = ids

@@ -330,37 +330,39 @@ enum SelfTest {
             size: NSSize(width: 380, height: 460),
             to: "/tmp/itimer-composer-undated.png"
         )
-        guard let folder = store.addCollection("本周交付"),
-              store.addCollection("副业") != nil,
-              store.setCollection(id: due.id, folder.id),
-              store.setCollection(id: review.id, folder.id),
-              let child = store.addSubtask(parentID: review.id, title: "看完鉴权模块"),
-              child.collectionID == folder.id else {
-            note("folders failed")
+        guard let child = store.addSubtask(parentID: review.id, title: "看完鉴权模块") else {
+            note("subtask failed")
             return false
         }
-        note("tasks filed into folders")
-        // The row's "add subtask" field: undated, filed with its parent,
-        // and shown in the parent's progress count.
+        // The row's "add subtask" field: undated, and shown in the parent's
+        // progress count.
         guard let step = store.addSchedule(title: "补单测 #测试", parentID: review.id, start: nil, plannedDuration: nil, reminderLead: nil),
-              step.isUndated, step.parentID == review.id, step.collectionID == folder.id, step.tags == ["测试"],
+              step.isUndated, step.parentID == review.id, step.tags == ["测试"],
               store.subtasks(of: review.id).count == 2 else {
             note("subtask from the row field failed")
             return false
         }
-        note("subtasks nest under their parent")
-        render(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-folders-popup.png")
-        // Folding the parent hides its subtasks in the folder view; the
-        // flag lives in the app's defaults, so put the user's back after.
+        // Folding the parent hides its subtasks; the flag lives in the app's
+        // defaults, so put the user's back after.
         let defaults = UserDefaults.standard
         let savedFolds = defaults.string(forKey: "collapsedParents")
         defer { defaults.set(savedFolds, forKey: "collapsedParents") }
         defaults.set("", forKey: "collapsedParents")
-        let unfolded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760))
+        let unfolded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-subtasks-popup.png")
+        // The undated subtask sits under its running parent, not down in
+        // 时间待定: no section title between the parent and it.
+        guard let parentAt = unfolded.firstIndex(where: { $0.contains("代码评审") }),
+              let stepAt = unfolded.firstIndex(where: { $0.contains("补单测") }),
+              unfolded.contains(where: { $0.contains(child.title) }),
+              parentAt < stepAt,
+              !unfolded[parentAt..<stepAt].contains(where: { ["已暂停", "接下来", "时间待定"].contains($0) }) else {
+            note("subtasks did not nest under their parent")
+            return false
+        }
+        note("subtasks nest under their parent")
         defaults.set(review.id.uuidString, forKey: "collapsedParents")
-        let folded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-folders-folded.png")
-        guard unfolded.contains(where: { $0.contains("看完鉴权模块") }),
-              !folded.contains(where: { $0.contains("看完鉴权模块") }),
+        let folded = renderedLabels(MenuBarView(store: store), size: NSSize(width: 380, height: 760), to: "/tmp/itimer-subtasks-folded.png")
+        guard !folded.contains(where: { $0.contains(child.title) }),
               folded.contains(where: { $0.contains("代码评审") }),
               folded.contains("展开子任务") else {
             note("folding subtasks failed")
@@ -542,7 +544,7 @@ enum SelfTest {
         let open = TaskStore.shared.tasks.filter { !$0.isCompleted }
         let row = open.lazy.compactMap { find(identifier: "task-row-\($0.id.uuidString)") }.compactMap(screenCenter(of:)).first(where: window.frame.contains)
         // Otherwise aim where the list's first rows sit (under the hero card);
-        // any row or folder menu there shows the same flash.
+        // any row menu there shows the same flash.
         // In the main window the list is the column after the sidebar.
         let sidebar = collect(NSSplitView.self, in: window.contentView).first?.arrangedSubviews.first?.frame.width ?? 0
         let point = row ?? (window === menuWindow()
