@@ -14,7 +14,12 @@ enum SelfTest {
         resultURL = URL(fileURLWithPath: launch.resultPath)
         note("self-test started data=\(TaskStore.shared.url.path)")
         Task { @MainActor in
-            let passed = launch.scenario == "workflow" ? await exerciseWorkflow() : await exercise()
+            let passed: Bool
+            switch launch.scenario {
+            case "workflow": passed = await exerciseWorkflow()
+            case "goal": passed = await exerciseGoal()
+            default: passed = await exercise()
+            }
             note(passed ? "PASS" : "FAIL")
             persist(passed: passed)
             exit(passed ? 0 : 1)
@@ -680,6 +685,12 @@ enum SelfTest {
         try? data.write(to: resultURL)
     }
 
+    /// The field editor holding `name`, when a text field has keyboard
+    /// focus with that text in it.
+    private static func editingField(named name: String) -> NSTextView? {
+        NSApp.windows.lazy.compactMap { $0.firstResponder as? NSTextView }.first { $0.string == name }
+    }
+
     private static func find(identifier: String) -> AXUIElement? {
         find(in: AXUIElementCreateApplication(getpid()), depth: 0) { string($0, kAXIdentifierAttribute) == identifier }
     }
@@ -725,16 +736,13 @@ extension SelfTest {
             return false
         }
         UserDefaults.standard.set(MainDestination.workflow(flow.id).raw, forKey: "mainDestination")
-        for _ in 1...10 where !NSApp.isActive {
-            NSApp.activate(ignoringOtherApps: true)
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
+        await activateUnlessBackground()
         guard await wait(for: 5, label: "canvas", until: { canvasCatcher() != nil }),
               let catcher = canvasCatcher(), let window = catcher.window else {
             note("canvas not shown. windows=\(windowSummary())")
             return false
         }
-        window.makeKeyAndOrderFront(nil)
+        bringForward(window)
         try? await Task.sleep(nanoseconds: 800_000_000)
         func spot(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
             catcher.convert(NSPoint(x: x + origin.width, y: y + origin.height), to: nil)
@@ -820,6 +828,159 @@ extension SelfTest {
         return true
     }
 
+    /// Drives a goal's roadmap the way a person would: wire two milestones
+    /// from a port, open one and come back, mark it reached, then use the
+    /// 目标 menu with the main window closed.
+    static func exerciseGoal() async -> Bool {
+        let store = TaskStore.shared
+        guard let goal = store.addGoal("自检目标") else {
+            note("goal not created")
+            return false
+        }
+        store.setGoalViewport(id: goal.id, WorkflowViewport(x: 160, y: 160, scale: 1))
+        let gap = CGFloat(Goal.columnGap)
+        guard let first = store.addMilestone(title: "内测", in: goal.id, x: 0, y: 0),
+              let second = store.addMilestone(title: "首批付费", in: goal.id, x: Double(gap), y: 0),
+              let step = store.addWorkflowStep(title: "招募内测用户", in: first.id, x: 0, y: 0) else {
+            note("milestones not created")
+            return false
+        }
+        UserDefaults.standard.set(MainDestination.goal(goal.id).raw, forKey: "mainDestination")
+        await activateUnlessBackground()
+        guard await wait(for: 5, label: "roadmap", until: { find(identifier: "goal-title") != nil && canvasCatcher() != nil }),
+              let catcher = canvasCatcher(), let window = catcher.window else {
+            note("roadmap not shown. windows=\(windowSummary())")
+            return false
+        }
+        bringForward(window)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        // The canvas may pan once it knows its size; map from where it settled.
+        let viewport = store.goal(id: goal.id)?.viewport ?? WorkflowViewport(x: 160, y: 160, scale: 1)
+        func spot(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            catcher.convert(NSPoint(x: x * viewport.scale + viewport.x, y: y * viewport.scale + viewport.y), to: nil)
+        }
+        let card = CanvasLayout.goal.card
+        let edges = { store.goal(id: goal.id)?.edges ?? [] }
+        let states = { store.milestoneSummaries(in: goal.id).mapValues(\.state) }
+
+        guard states()[second.id] == .ready else {
+            note("unwired 首批付费 should be ready: \(String(describing: states()[second.id]))")
+            return false
+        }
+        await drag(in: window, from: spot(card.width / 2 + 7, 0), to: spot(gap, 0))
+        guard await wait(for: 3, label: "milestone link", until: { edges() == [WorkflowEdge(from: first.id, to: second.id)] }) else {
+            note("dragging 内测's port onto 首批付费 did not wire them: \(edges())")
+            return false
+        }
+        guard await wait(for: 3, label: "blocked", until: { states()[second.id] == .blocked }) else {
+            note("首批付费 did not wait on 内测: \(String(describing: states()[second.id]))")
+            return false
+        }
+        note("port drag wired 内测 → 首批付费, which now waits")
+
+        await click(in: window, at: spot(-card.width / 2 + 40, card.height / 2 - 14), count: 2)
+        guard await wait(for: 3, label: "open milestone", until: {
+            UserDefaults.standard.string(forKey: "mainDestination") == MainDestination.workflow(first.id).raw
+                && find(identifier: "back-to-roadmap") != nil
+        }) else {
+            note("double-clicking 内测 did not open its workflow: \(UserDefaults.standard.string(forKey: "mainDestination") ?? "nil")")
+            return false
+        }
+        guard let back = find(identifier: "back-to-roadmap"),
+              AXUIElementPerformAction(back, kAXPressAction as CFString) == .success,
+              await wait(for: 3, label: "back", until: {
+                  UserDefaults.standard.string(forKey: "mainDestination") == MainDestination.goal(goal.id).raw
+              }) else {
+            note("返回路线图 did not bring the roadmap back")
+            return false
+        }
+        note("double-click opened 内测's workflow; 返回路线图 came back")
+
+        store.complete(id: step.id)
+        guard await wait(for: 2, label: "review", until: { states()[first.id] == .review }),
+              await wait(for: 3, label: "achieve button", until: { find(identifier: "milestone-achieve-\(first.id.uuidString)") != nil }),
+              let achieve = find(identifier: "milestone-achieve-\(first.id.uuidString)"),
+              AXUIElementPerformAction(achieve, kAXPressAction as CFString) == .success else {
+            note("内测 with its tasks done offered no 标记达成: \(String(describing: states()[first.id]))")
+            return false
+        }
+        guard await wait(for: 2, label: "achieved", until: {
+            states()[first.id] == .achieved && states()[second.id] == .ready
+        }) else {
+            note("marking 内测 reached did not free 首批付费: \(states())")
+            return false
+        }
+        note("标记达成 reached 内测 and 首批付费 became ready")
+        snapshot(window, to: "/tmp/itimer-goal.png")
+
+        window.close()
+        guard await wait(for: 2, label: "window closed", until: { !window.isVisible }) else {
+            note("main window did not close")
+            return false
+        }
+        UserDefaults.standard.set(MainDestination.analysis.raw, forKey: "mainDestination")
+        guard pressMenuItem(menu: "目标", item: goal.name),
+              await wait(for: 3, label: "menu reopen", until: {
+                  UserDefaults.standard.string(forKey: "mainDestination") == MainDestination.goal(goal.id).raw
+                      && find(identifier: "goal-title") != nil
+              }) else {
+            note("目标 › \(goal.name) did not reopen the roadmap")
+            return false
+        }
+        note("目标 menu reopened the closed window on the roadmap")
+
+        let count = store.goals.count
+        guard pressMenuItem(menu: "目标", item: "新建目标"),
+              await wait(for: 3, label: "new goal", until: { store.goals.count == count + 1 }),
+              let made = store.goals.last,
+              await wait(for: 3, label: "goal rename", until: { editingField(named: made.name) != nil }) else {
+            let editing = NSApp.windows.compactMap { ($0.firstResponder as? NSTextView)?.string }
+            note("新建目标 did not add a goal waiting for its name: goals=\(store.goals.count - count) editing=\(editing)")
+            return false
+        }
+        note("新建目标 added a goal with its name field open")
+        return true
+    }
+
+    /// Off in a background run: the app never becomes active, so the user
+    /// keeps the screen, the keyboard and the mouse. Events still reach the
+    /// windows, which get them directly.
+    private static var background: Bool { DebugLaunchFile.current?.background == true }
+
+    private static func activateUnlessBackground() async {
+        guard !background else { return }
+        for _ in 1...10 where !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    private static func bringForward(_ window: NSWindow) {
+        if background {
+            // Key without activating the app: the window then takes clicks
+            // as a front window does, while another app keeps the screen.
+            window.orderFront(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Presses an item of a menu bar menu through accessibility. SwiftUI
+    /// fills a CommandMenu only when it opens, so the menu is updated first.
+    private static func pressMenuItem(menu title: String, item: String) -> Bool {
+        guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == title })?.submenu else {
+            note("no \(title) menu")
+            return false
+        }
+        menu.update()
+        guard let index = menu.items.firstIndex(where: { $0.title == item }) else {
+            note("no \(item) in \(title): \(menu.items.map(\.title))")
+            return false
+        }
+        menu.performActionForItem(at: index)
+        return true
+    }
+
     private static func canvasCatcher() -> CanvasEventCatcher.CatcherView? {
         NSApp.windows.flatMap { collect(CanvasEventCatcher.CatcherView.self, in: $0.contentView) }.first
     }
@@ -863,6 +1024,26 @@ extension SelfTest {
         await play(events, in: window)
     }
 
+    /// Hands an event to its view directly. A window of an app that is not
+    /// active is never key, and AppKit spends the first click on such a
+    /// window bringing it forward; the background run skips that.
+    private static func deliver(_ event: NSEvent, in window: NSWindow, pressed: inout NSView?) {
+        switch event.type {
+        case .leftMouseDown:
+            guard let frame = window.contentView?.superview,
+                  let view = frame.hitTest(frame.convert(event.locationInWindow, from: nil)) else { return }
+            pressed = view
+            view.mouseDown(with: event)
+        case .leftMouseDragged:
+            pressed?.mouseDragged(with: event)
+        case .leftMouseUp:
+            pressed?.mouseUp(with: event)
+            pressed = nil
+        default:
+            window.sendEvent(event)
+        }
+    }
+
     /// Queues a pixel scroll at a window point, where the canvas's event
     /// monitor watches. False when no event could be made.
     private static func scroll(in window: NSWindow, at point: NSPoint, dy: Int32) async -> Bool {
@@ -877,7 +1058,18 @@ extension SelfTest {
             note("scroll event unavailable; skipped")
             return false
         }
-        NSApp.postEvent(event, atStart: false)
+        if background {
+            // Local monitors see what the app dispatches; a window behind
+            // another app's is not found by screen position, so hand the
+            // event to the canvas's monitor directly.
+            guard let catcher = collect(CanvasEventCatcher.CatcherView.self, in: window.contentView).first,
+                  catcher.deliver(event, at: catcher.convert(point, from: nil)) else {
+                note("scroll event not taken by the canvas; skipped")
+                return false
+            }
+        } else {
+            NSApp.postEvent(event, atStart: false)
+        }
         try? await Task.sleep(nanoseconds: 300_000_000)
         return true
     }
@@ -885,10 +1077,16 @@ extension SelfTest {
     /// Sends each event through the window from a timer: a mouse-down may
     /// start a tracking loop, which would hold up this task until release.
     private static func play(_ events: [NSEvent], in window: NSWindow, gap: TimeInterval = 0.04) async {
+        // The view that took the mouse-down gets the drags and the release,
+        // as AppKit does.
+        nonisolated(unsafe) var pressed: NSView?
         for (index, event) in events.enumerated() {
             nonisolated(unsafe) let event = event
             RunLoop.main.add(Timer(timeInterval: gap * Double(index + 1), repeats: false) { _ in
-                MainActor.assumeIsolated { window.sendEvent(event) }
+                MainActor.assumeIsolated {
+                    guard background else { return window.sendEvent(event) }
+                    deliver(event, in: window, pressed: &pressed)
+                }
             }, forMode: .common)
         }
         try? await Task.sleep(nanoseconds: UInt64((gap * Double(events.count + 2) + 0.35) * 1_000_000_000))

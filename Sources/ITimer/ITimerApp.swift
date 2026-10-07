@@ -24,6 +24,9 @@ struct ITimerApp: App {
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             }
+            CommandMenu("目标") {
+                GoalCommands(store: .shared)
+            }
         }
 
         MenuBarExtra {
@@ -50,7 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private static var panelWasOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.activate(ignoringOtherApps: true)
+        if DebugLaunchFile.current?.background != true {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         Task { @MainActor in
             CalendarManager.shared.attach(to: TaskStore.shared)
             startClock()

@@ -147,6 +147,8 @@ struct CanvasLayout {
     var row: CGFloat
 
     static let workflow = CanvasLayout(card: CanvasMetrics.card, column: CanvasMetrics.column, row: CanvasMetrics.row)
+    /// Milestones carry more on a card, so cards are larger and further apart.
+    static let goal = CanvasLayout(card: CGSize(width: 260, height: 116), column: CGFloat(Goal.columnGap), row: CGFloat(Goal.rowGap))
 }
 
 /// Dot grid that pans and zooms with the canvas. Dots thin out when zoomed
@@ -294,7 +296,7 @@ struct CanvasEventCatcher: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            guard let handlers, let window, !isHiddenOrHasHiddenAncestor else { return false }
+            guard let window, !isHiddenOrHasHiddenAncestor else { return false }
             let windowPoint: NSPoint
             if let target = event.window {
                 guard target === window else { return false }
@@ -305,8 +307,13 @@ struct CanvasEventCatcher: NSViewRepresentable {
                 guard NSWindow.windowNumber(at: event.locationInWindow, belowWindowWithWindowNumber: 0) == window.windowNumber else { return false }
                 windowPoint = window.convertPoint(fromScreen: event.locationInWindow)
             }
-            let point = convert(windowPoint, from: nil)
-            guard bounds.contains(point) else { return false }
+            return deliver(event, at: convert(windowPoint, from: nil))
+        }
+
+        /// Handles a scroll or pinch at a point in this view.
+        @discardableResult
+        func deliver(_ event: NSEvent, at point: CGPoint) -> Bool {
+            guard let handlers, bounds.contains(point) else { return false }
             switch event.type {
             case .scrollWheel:
                 handlers.onScroll(CanvasScroll(

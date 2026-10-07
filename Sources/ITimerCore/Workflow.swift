@@ -104,6 +104,13 @@ public struct Workflow: Codable, Equatable, Identifiable, Sendable, DependencyGr
     public var edges: [WorkflowEdge]
     /// Last pan and zoom. nil = fit the nodes when opened.
     public var viewport: WorkflowViewport?
+    /// As a milestone on a goal: what "reached" means. Empty = not set.
+    public var criteria: String
+    /// As a milestone: the day it should be reached by (start of that day).
+    public var targetDate: Date?
+    /// As a milestone: marked reached by hand. Finishing every task does
+    /// not set it — a milestone is an outcome, not a checklist.
+    public var achievedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -111,7 +118,10 @@ public struct Workflow: Codable, Equatable, Identifiable, Sendable, DependencyGr
         createdAt: Date = Date(),
         nodes: [WorkflowNode] = [],
         edges: [WorkflowEdge] = [],
-        viewport: WorkflowViewport? = nil
+        viewport: WorkflowViewport? = nil,
+        criteria: String = "",
+        targetDate: Date? = nil,
+        achievedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -119,10 +129,13 @@ public struct Workflow: Codable, Equatable, Identifiable, Sendable, DependencyGr
         self.nodes = nodes
         self.edges = edges
         self.viewport = viewport
+        self.criteria = criteria
+        self.targetDate = targetDate
+        self.achievedAt = achievedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, createdAt, nodes, edges, viewport
+        case id, name, createdAt, nodes, edges, viewport, criteria, targetDate, achievedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -133,6 +146,9 @@ public struct Workflow: Codable, Equatable, Identifiable, Sendable, DependencyGr
         nodes = try container.decodeIfPresent([WorkflowNode].self, forKey: .nodes) ?? []
         edges = try container.decodeIfPresent([WorkflowEdge].self, forKey: .edges) ?? []
         viewport = try container.decodeIfPresent(WorkflowViewport.self, forKey: .viewport)
+        criteria = try container.decodeIfPresent(String.self, forKey: .criteria) ?? ""
+        targetDate = try container.decodeIfPresent(Date.self, forKey: .targetDate)
+        achievedAt = try container.decodeIfPresent(Date.self, forKey: .achievedAt)
     }
 
     /// One line, short enough for a sidebar.

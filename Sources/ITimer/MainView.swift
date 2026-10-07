@@ -15,7 +15,7 @@ struct MainView: View {
                     .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
             } content: {
                 // No title here: the window takes the detail's, so it reads
-                // 注意力分析 or the workflow's name.
+                // 注意力分析, the goal's or the workflow's name.
                 MenuBarView(store: store, embedded: true)
                     .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 440)
             } detail: {
@@ -50,11 +50,14 @@ struct MainView: View {
         }
     }
 
-    /// A workflow that has since been deleted falls back to the analysis.
+    /// A workflow or goal that has since been deleted falls back to the analysis.
     private var destination: MainDestination {
         let stored = MainDestination(raw: destinationRaw)
-        if case .workflow(let id) = stored, store.workflow(id: id) == nil { return .analysis }
-        return stored
+        switch stored {
+        case .workflow(let id) where store.workflow(id: id) == nil: return .analysis
+        case .goal(let id) where store.goal(id: id) == nil: return .analysis
+        default: return stored
+        }
     }
 
     private var selection: Binding<MainDestination?> {
@@ -68,9 +71,30 @@ struct MainView: View {
             AnalysisView(store: store)
                 .navigationTitle("注意力分析")
         case .workflow(let id):
+            let goal = store.goal(containing: id)
+            let name = store.workflow(id: id)?.name ?? "工作流"
             WorkflowCanvasView(store: store, workflowID: id)
                 .id(id)
-                .navigationTitle(store.workflow(id: id)?.name ?? "工作流")
+                .navigationTitle(goal.map { "\($0.name) › \(name)" } ?? name)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        if let goal {
+                            Button {
+                                destinationRaw = MainDestination.goal(goal.id).raw
+                            } label: {
+                                Label("返回路线图", systemImage: "chevron.backward")
+                            }
+                            .help("回到目标「\(goal.name)」的路线图")
+                            .accessibilityIdentifier("back-to-roadmap")
+                        }
+                    }
+                }
+        case .goal(let id):
+            GoalCanvasView(store: store, goalID: id) { workflowID in
+                destinationRaw = MainDestination.workflow(workflowID).raw
+            }
+            .id(id)
+            .navigationTitle(store.goal(id: id)?.name ?? "目标")
         }
     }
 }

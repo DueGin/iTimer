@@ -894,12 +894,7 @@ struct MenuBarView: View {
     }
 
     private func revealMain() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "main")
-        DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        MainWindow.reveal(openWindow)
     }
 }
 
