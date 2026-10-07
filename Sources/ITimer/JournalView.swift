@@ -60,7 +60,6 @@ struct JournalView: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if let collection = store.collection(id: task.collectionID) { parts.append(collection.name) }
         if !task.tags.isEmpty { parts.append(task.tags.map { "#\($0)" }.joined(separator: " ")) }
         parts.append(task.isRunning ? "计时中" : task.isPending ? "未开始" : task.isCompleted ? "已完成" : "已暂停")
         return parts.joined(separator: " · ")

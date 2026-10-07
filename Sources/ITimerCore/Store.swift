@@ -6,27 +6,27 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
     public var brainSplitThreshold: Int
     public var tasks: [TaskItem]
     public var calendarSyncEnabled: Bool
-    public var collections: [TaskCollection]
     public var workflows: [Workflow]
+    public var goals: [Goal]
 
     public init(
-        version: Int = 2,
+        version: Int = 3,
         brainSplitThreshold: Int,
         tasks: [TaskItem],
         calendarSyncEnabled: Bool = false,
-        collections: [TaskCollection] = [],
-        workflows: [Workflow] = []
+        workflows: [Workflow] = [],
+        goals: [Goal] = []
     ) {
         self.version = version
         self.brainSplitThreshold = brainSplitThreshold
         self.tasks = tasks
         self.calendarSyncEnabled = calendarSyncEnabled
-        self.collections = collections
         self.workflows = workflows
+        self.goals = goals
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, brainSplitThreshold, tasks, calendarSyncEnabled, collections, workflows
+        case version, brainSplitThreshold, tasks, calendarSyncEnabled, workflows, goals
     }
 
     public init(from decoder: Decoder) throws {
@@ -35,8 +35,8 @@ public struct StoreSnapshot: Codable, Equatable, Sendable {
         brainSplitThreshold = try container.decode(Int.self, forKey: .brainSplitThreshold)
         tasks = try container.decode([TaskItem].self, forKey: .tasks)
         calendarSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .calendarSyncEnabled) ?? false
-        collections = try container.decodeIfPresent([TaskCollection].self, forKey: .collections) ?? []
         workflows = try container.decodeIfPresent([Workflow].self, forKey: .workflows) ?? []
+        goals = try container.decodeIfPresent([Goal].self, forKey: .goals) ?? []
     }
 }
 
@@ -46,6 +46,9 @@ public struct DebugLaunch: Codable, Equatable, Sendable {
     public var selfTest: Bool
     /// Which self-test to run; nil = the full panel and window run.
     public var scenario: String?
+    /// Run without activating the app, so the test never takes the screen,
+    /// the keyboard or the mouse. Events go straight to the windows.
+    public var background: Bool?
 }
 
 public enum DebugLaunchFile {
@@ -66,10 +69,10 @@ public final class TaskStore {
     public private(set) var tasks: [TaskItem]
     public private(set) var brainSplitThreshold: Int
     public private(set) var calendarSyncEnabled: Bool
-    /// User-created collections, in display order. Empty until the user makes one.
-    public private(set) var collections: [TaskCollection]
     /// User-created workflow canvases, in sidebar order.
     public private(set) var workflows: [Workflow]
+    /// Goals, in sidebar order. Each wires some workflows as milestones.
+    public private(set) var goals: [Goal]
     public private(set) var now: Date
     public private(set) var lastError: String?
     public let url: URL
@@ -95,8 +98,8 @@ public final class TaskStore {
         self.tasks = loaded.tasks
         self.brainSplitThreshold = loaded.brainSplitThreshold
         self.calendarSyncEnabled = loaded.calendarSyncEnabled
-        self.collections = loaded.collections
         self.workflows = loaded.workflows
+        self.goals = loaded.goals
         self.lastError = loaded.error
     }
 
@@ -183,15 +186,6 @@ public final class TaskStore {
             }
         }
         return result
-    }
-
-    public func collection(id: UUID?) -> TaskCollection? {
-        guard let id else { return nil }
-        return collections.first { $0.id == id }
-    }
-
-    public func collection(named name: String) -> TaskCollection? {
-        collections.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Direct children of a task, oldest first. Subtasks are one level deep.
@@ -298,7 +292,6 @@ public final class TaskStore {
     @discardableResult
     public func addTask(
         title: String,
-        collectionID: UUID? = nil,
         parentID: UUID? = nil,
         at now: Date? = nil
     ) -> TaskItem? {
@@ -316,7 +309,6 @@ public final class TaskStore {
             createdAt: stamp,
             segments: [TimeSegment(startedAt: stamp)],
             tags: parsed.tags,
-            collectionID: parent?.collectionID ?? resolvedCollection(collectionID),
             parentID: parent?.id
         )
         tasks.insert(task, at: 0)
@@ -329,13 +321,12 @@ public final class TaskStore {
     /// Add a schedule. It does not start timing — not even once its start
     /// time passes; the user starts it explicitly via `resume(id:)`.
     /// `start` nil = time to be decided; such a schedule has no reminder.
-    /// `tags` add to whatever `#` the title carries. A subtask inherits its
-    /// parent's collection and cannot itself be a parent.
+    /// `tags` add to whatever `#` the title carries. A subtask cannot itself
+    /// be a parent.
     @discardableResult
     public func addSchedule(
         title: String,
         tags: [String] = [],
-        collectionID: UUID? = nil,
         parentID: UUID? = nil,
         start: Date?,
         plannedDuration: TimeInterval?,
@@ -351,7 +342,6 @@ public final class TaskStore {
             title: String(parsed.title.prefix(80)),
             createdAt: stamp,
             tags: TitleParser.merge(tags, parsed.tags),
-            collectionID: parent?.collectionID ?? resolvedCollection(collectionID),
             parentID: parent?.id,
             scheduledStart: start,
             plannedDuration: plannedDuration.map { max(60, $0) },
@@ -478,7 +468,7 @@ public final class TaskStore {
     @discardableResult
     public func setTags(id: UUID, _ tags: [String]) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
-        let cleaned = TitleParser.merge(tags.map(TaskCollection.clean).filter { !$0.isEmpty }, [])
+        let cleaned = TitleParser.merge(tags.map(TitleParser.cleanTag).filter { !$0.isEmpty }, [])
         guard cleaned != tasks[index].tags else { return true }
         tasks[index].tags = cleaned
         save()
@@ -549,26 +539,9 @@ public final class TaskStore {
         return String(collapsed.joined(separator: "\n").prefix(2000))
     }
 
-    /// Files a task (and its subtasks) into a collection. nil removes it.
-    /// An unknown id is ignored. A subtask cannot be filed on its own —
-    /// it follows its parent.
-    @discardableResult
-    public func setCollection(id: UUID, _ collectionID: UUID?) -> Bool {
-        guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].parentID == nil else { return false }
-        let resolved = resolvedCollection(collectionID)
-        guard resolved != tasks[index].collectionID else { return true }
-        tasks[index].collectionID = resolved
-        for child in tasks.indices where tasks[child].parentID == id {
-            tasks[child].collectionID = resolved
-        }
-        save()
-        syncTask(id: id)
-        return true
-    }
-
     /// Makes `id` a subtask of `parentID`, or a top-level task when nil.
     /// Refuses a parent that is itself a subtask, or a task that already
-    /// has children — nesting stays one level deep. Filing follows the parent.
+    /// has children — nesting stays one level deep.
     @discardableResult
     public func setParent(id: UUID, _ parentID: UUID?) -> Bool {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
@@ -582,7 +555,6 @@ public final class TaskStore {
         guard let parent = resolvedParent(parentID), parent.id != id else { return false }
         guard tasks[index].parentID != parent.id else { return true }
         tasks[index].parentID = parent.id
-        tasks[index].collectionID = parent.collectionID
         save()
         syncTask(id: id)
         return true
@@ -592,69 +564,6 @@ public final class TaskStore {
     @discardableResult
     public func addSubtask(parentID: UUID, title: String, at now: Date? = nil) -> TaskItem? {
         addTask(title: title, parentID: parentID, at: now)
-    }
-
-    // MARK: - Collections
-
-    /// Adds a collection (next palette color). An existing name returns
-    /// the existing one. Empty names are refused — collections are created
-    /// on purpose, never inferred from a task title.
-    @discardableResult
-    public func addCollection(_ name: String, at now: Date? = nil) -> TaskCollection? {
-        let cleaned = TaskCollection.clean(name)
-        guard !cleaned.isEmpty, cleaned != CollectionStats.uncollected else { return nil }
-        if let existing = collection(named: cleaned) { return existing }
-        let used = Set(collections.map(\.color))
-        let color = (0..<Self.collectionColorCount).first { !used.contains($0) } ?? collections.count % Self.collectionColorCount
-        let collection = TaskCollection(name: cleaned, color: color, createdAt: now ?? self.now)
-        collections.append(collection)
-        save()
-        return collection
-    }
-
-    @discardableResult
-    public func renameCollection(id: UUID, to new: String) -> Bool {
-        let cleaned = TaskCollection.clean(new)
-        guard !cleaned.isEmpty, cleaned != CollectionStats.uncollected,
-              let index = collections.firstIndex(where: { $0.id == id }) else { return false }
-        if cleaned == collections[index].name { return true }
-        guard collection(named: cleaned) == nil else { return false }
-        collections[index].name = cleaned
-        save()
-        return true
-    }
-
-    /// Removes the collection. Its tasks stay, just unfiled.
-    public func removeCollection(id: UUID) {
-        guard let index = collections.firstIndex(where: { $0.id == id }) else { return }
-        collections.remove(at: index)
-        let affected = tasks.indices.filter { tasks[$0].collectionID == id }
-        for task in affected { tasks[task].collectionID = nil }
-        save()
-        affected.forEach { syncTask(id: tasks[$0].id) }
-    }
-
-    public func setCollectionColor(id: UUID, color: Int) {
-        guard let index = collections.firstIndex(where: { $0.id == id }), collections[index].color != color else { return }
-        collections[index].color = color
-        save()
-    }
-
-    public func moveCollection(id: UUID, by offset: Int) {
-        guard let index = collections.firstIndex(where: { $0.id == id }) else { return }
-        let target = index + offset
-        guard collections.indices.contains(target) else { return }
-        collections.swapAt(index, target)
-        save()
-    }
-
-    /// Size of the app's collection palette; colors cycle past it.
-    public static let collectionColorCount = 8
-
-    /// A collection id that still exists, or nil.
-    private func resolvedCollection(_ id: UUID?) -> UUID? {
-        guard let id, collections.contains(where: { $0.id == id }) else { return nil }
-        return id
     }
 
     /// A parent that can still take children: it exists and is itself a root.
@@ -721,10 +630,13 @@ public final class TaskStore {
         return true
     }
 
-    /// Removes the canvas. Its tasks stay, just off any workflow.
+    /// Removes the canvas. Its tasks stay, just off any workflow; a goal
+    /// it was a milestone on loses the card and its lines.
     public func removeWorkflow(id: UUID) {
         guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
         workflows.remove(at: index)
+        let kept = Set(workflows.map(\.id))
+        goals = goals.map { $0.pruned(keeping: kept) }
         save()
     }
 
@@ -781,7 +693,7 @@ public final class TaskStore {
 
     /// A new step drawn on the canvas: an undated schedule (it waits to be
     /// started like any other), placed at the point. With `upstream` it is
-    /// wired after that task and filed in the same collection.
+    /// wired after that task.
     @discardableResult
     public func addWorkflowStep(
         title: String,
@@ -792,10 +704,8 @@ public final class TaskStore {
         at now: Date? = nil
     ) -> TaskItem? {
         guard workflow(id: workflowID) != nil else { return nil }
-        let collectionID = upstream.flatMap { id in tasks.first { $0.id == id }?.collectionID }
         guard let task = addSchedule(
             title: title,
-            collectionID: collectionID,
             start: nil,
             plannedDuration: nil,
             reminderLead: nil,
@@ -844,12 +754,7 @@ public final class TaskStore {
     /// Lays the canvas out in columns by dependency depth.
     public func arrangeWorkflow(id: UUID) {
         guard let index = workflows.firstIndex(where: { $0.id == id }) else { return }
-        let positions = workflows[index].arranged()
-        for node in workflows[index].nodes.indices {
-            guard let point = positions[workflows[index].nodes[node].taskID] else { continue }
-            workflows[index].nodes[node].x = point.x
-            workflows[index].nodes[node].y = point.y
-        }
+        workflows[index].applyArrangement()
         save()
     }
 
@@ -884,6 +789,269 @@ public final class TaskStore {
         }
         guard !advance.isEmpty else { return }
         onWorkflowAdvance?(advance)
+    }
+
+    // MARK: - Goals
+
+    public func goal(id: UUID?) -> Goal? {
+        guard let id else { return nil }
+        return goals.first { $0.id == id }
+    }
+
+    /// The goal a workflow is a milestone on. A workflow sits on at most one.
+    public func goal(containing workflowID: UUID) -> Goal? {
+        goals.first { $0.contains(workflowID) }
+    }
+
+    public var workflowsByID: [UUID: Workflow] {
+        Dictionary(workflows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Open and finished subtasks by parent id.
+    public var subtasksByParent: [UUID: [TaskItem]] {
+        Dictionary(grouping: tasks.filter { $0.parentID != nil }, by: { $0.parentID! })
+    }
+
+    /// Workflows that are not a milestone on any goal, in sidebar order.
+    public var standaloneWorkflows: [Workflow] {
+        let placed = Set(goals.flatMap { $0.nodes.map(\.workflowID) })
+        return workflows.filter { !placed.contains($0.id) }
+    }
+
+    /// A goal's milestones in roadmap reading order: left to right, then
+    /// top to bottom.
+    public func milestones(in goalID: UUID) -> [Workflow] {
+        guard let goal = goal(id: goalID) else { return [] }
+        let byID = workflowsByID
+        return goal.nodes
+            .sorted { ($0.x, $0.y) < ($1.x, $1.y) }
+            .compactMap { byID[$0.workflowID] }
+    }
+
+    /// Adds an empty roadmap. A name already in use gets a number.
+    @discardableResult
+    public func addGoal(_ name: String, at now: Date? = nil) -> Goal? {
+        let cleaned = Workflow.clean(name)
+        guard !cleaned.isEmpty else { return nil }
+        let taken = Set(goals.map(\.name))
+        var unique = cleaned
+        var number = 2
+        while taken.contains(unique) {
+            unique = "\(cleaned) \(number)"
+            number += 1
+        }
+        let goal = Goal(name: unique, createdAt: now ?? self.now)
+        goals.append(goal)
+        save()
+        return goal
+    }
+
+    @discardableResult
+    public func renameGoal(id: UUID, to name: String) -> Bool {
+        let cleaned = Workflow.clean(name)
+        guard !cleaned.isEmpty, let index = goals.firstIndex(where: { $0.id == id }) else { return false }
+        guard cleaned != goals[index].name else { return true }
+        goals[index].name = cleaned
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func setGoalNote(id: UUID, _ note: String) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == id }) else { return false }
+        let cleaned = Self.cleanJournal(note)
+        guard cleaned != goals[index].note else { return true }
+        goals[index].note = cleaned
+        save()
+        return true
+    }
+
+    public func moveGoal(id: UUID, by offset: Int) {
+        guard let index = goals.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard goals.indices.contains(target) else { return }
+        goals.swapAt(index, target)
+        save()
+    }
+
+    /// Removes the roadmap. Its milestones stay as workflows of their own,
+    /// tasks and all; only the cards and lines go.
+    public func removeGoal(id: UUID) {
+        guard let index = goals.firstIndex(where: { $0.id == id }) else { return }
+        goals.remove(at: index)
+        save()
+    }
+
+    /// Puts a workflow on a goal's roadmap at a point, or right of the
+    /// rightmost card without one. A workflow on another goal leaves it,
+    /// lines and all; on this one it just moves.
+    @discardableResult
+    public func placeMilestone(workflowID: UUID, in goalID: UUID, x: Double? = nil, y: Double? = nil) -> Bool {
+        guard workflows.contains(where: { $0.id == workflowID }),
+              let target = goals.firstIndex(where: { $0.id == goalID }) else { return false }
+        if goals[target].contains(workflowID) {
+            guard let x, let y else { return true }
+            return moveMilestone(workflowID: workflowID, in: goalID, x: x, y: y)
+        }
+        for index in goals.indices where index != target && goals[index].contains(workflowID) {
+            let others = Set(goals[index].nodes.map(\.workflowID)).subtracting([workflowID])
+            goals[index] = goals[index].pruned(keeping: others)
+        }
+        let slot = goals[target].nextSlot(columnGap: Goal.columnGap)
+        goals[target].nodes.append(GoalNode(workflowID: workflowID, x: x ?? slot.x, y: y ?? slot.y))
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func moveMilestone(workflowID: UUID, in goalID: UUID, x: Double, y: Double) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == goalID }),
+              let node = goals[index].nodes.firstIndex(where: { $0.workflowID == workflowID }) else { return false }
+        guard goals[index].nodes[node].x != x || goals[index].nodes[node].y != y else { return true }
+        goals[index].nodes[node].x = x
+        goals[index].nodes[node].y = y
+        save()
+        return true
+    }
+
+    /// Takes a milestone off the roadmap, with its lines. The workflow stays.
+    @discardableResult
+    public func removeMilestone(workflowID: UUID, from goalID: UUID) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == goalID }),
+              goals[index].contains(workflowID) else { return false }
+        let others = Set(goals[index].nodes.map(\.workflowID)).subtracting([workflowID])
+        goals[index] = goals[index].pruned(keeping: others)
+        save()
+        return true
+    }
+
+    /// A new milestone drawn on the roadmap: an empty workflow placed at
+    /// the point, wired after `upstream` when given.
+    @discardableResult
+    public func addMilestone(
+        title: String,
+        in goalID: UUID,
+        x: Double,
+        y: Double,
+        after upstream: UUID? = nil,
+        at now: Date? = nil
+    ) -> Workflow? {
+        guard goal(id: goalID) != nil, let workflow = addWorkflow(title, at: now) else { return nil }
+        placeMilestone(workflowID: workflow.id, in: goalID, x: x, y: y)
+        if let upstream {
+            connectMilestones(from: upstream, to: workflow.id, in: goalID)
+        }
+        return self.workflow(id: workflow.id)
+    }
+
+    /// Wires `from` before `to`. Refuses a loop, a repeat, a self-edge, or
+    /// a workflow that is not on this roadmap.
+    @discardableResult
+    public func connectMilestones(from: UUID, to: UUID, in goalID: UUID) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == goalID }),
+              goals[index].canConnect(from: from, to: to) else { return false }
+        goals[index].edges.append(WorkflowEdge(from: from, to: to))
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func disconnectMilestones(from: UUID, to: UUID, in goalID: UUID) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == goalID }) else { return false }
+        let edge = WorkflowEdge(from: from, to: to)
+        guard goals[index].edges.contains(edge) else { return false }
+        goals[index].edges.removeAll { $0 == edge }
+        save()
+        return true
+    }
+
+    /// Lays the roadmap out in columns by dependency depth.
+    public func arrangeGoal(id: UUID) {
+        guard let index = goals.firstIndex(where: { $0.id == id }) else { return }
+        goals[index].applyArrangement(columnGap: Goal.columnGap, rowGap: Goal.rowGap)
+        save()
+    }
+
+    public func setGoalViewport(id: UUID, _ viewport: WorkflowViewport) {
+        guard let index = goals.firstIndex(where: { $0.id == id }),
+              goals[index].viewport != viewport else { return }
+        goals[index].viewport = viewport
+        save()
+    }
+
+    @discardableResult
+    public func setMilestoneCriteria(workflowID: UUID, _ text: String) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }) else { return false }
+        let cleaned = String(Self.cleanJournal(text).prefix(500))
+        guard cleaned != workflows[index].criteria else { return true }
+        workflows[index].criteria = cleaned
+        save()
+        return true
+    }
+
+    /// Kept as the start of the given day; nil clears it.
+    @discardableResult
+    public func setMilestoneTargetDate(workflowID: UUID, _ date: Date?, calendar: Calendar = .current) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }) else { return false }
+        let day = date.map { calendar.startOfDay(for: $0) }
+        guard day != workflows[index].targetDate else { return true }
+        workflows[index].targetDate = day
+        save()
+        return true
+    }
+
+    /// Marks the milestone reached, or takes that back.
+    @discardableResult
+    public func setMilestoneAchieved(workflowID: UUID, _ achieved: Bool, at now: Date? = nil) -> Bool {
+        guard let index = workflows.firstIndex(where: { $0.id == workflowID }) else { return false }
+        guard (workflows[index].achievedAt != nil) != achieved else { return true }
+        workflows[index].achievedAt = achieved ? (now ?? self.now) : nil
+        save()
+        return true
+    }
+
+    /// Every milestone card on a roadmap, read in one pass.
+    public func milestoneSummaries(in goalID: UUID, calendar: Calendar = .current) -> [UUID: MilestoneSummary] {
+        guard let goal = goal(id: goalID) else { return [:] }
+        let workflows = workflowsByID
+        let tasks = tasksByID
+        let subtasks = subtasksByParent
+        var result: [UUID: MilestoneSummary] = [:]
+        for node in goal.nodes {
+            result[node.workflowID] = goal.summary(
+                of: node.workflowID,
+                workflows: workflows,
+                tasks: tasks,
+                subtasks: subtasks,
+                now: now,
+                calendar: calendar
+            )
+        }
+        return result
+    }
+
+    public func milestoneSummary(of workflowID: UUID, calendar: Calendar = .current) -> MilestoneSummary? {
+        guard let goal = goal(containing: workflowID) else { return nil }
+        return goal.summary(
+            of: workflowID,
+            workflows: workflowsByID,
+            tasks: tasksByID,
+            subtasks: subtasksByParent,
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    /// Roadmap cards for workflows that are gone, and a workflow placed on
+    /// more than one goal (only a hand-edited file can do that), are dropped:
+    /// the first goal keeps it.
+    static func prunedGoals(_ goals: [Goal], workflowIDs: Set<UUID>) -> [Goal] {
+        var seen: Set<UUID> = []
+        return goals.map { goal in
+            let kept = goal.pruned(keeping: workflowIDs.subtracting(seen))
+            seen.formUnion(kept.nodes.map(\.workflowID))
+            return kept
+        }
     }
 
     /// Deletes a task and, if it is a parent, every subtask under it.
@@ -962,8 +1130,8 @@ public final class TaskStore {
             brainSplitThreshold: brainSplitThreshold,
             tasks: tasks,
             calendarSyncEnabled: calendarSyncEnabled,
-            collections: collections,
-            workflows: workflows
+            workflows: workflows,
+            goals: goals
         )
         do {
             try Self.write(snapshot, to: url)
@@ -982,8 +1150,8 @@ public final class TaskStore {
         var tasks: [TaskItem]
         var brainSplitThreshold: Int
         var calendarSyncEnabled: Bool
-        var collections: [TaskCollection] = []
         var workflows: [Workflow] = []
+        var goals: [Goal] = []
         var error: String?
     }
 
@@ -1004,9 +1172,9 @@ public final class TaskStore {
                 tasks: snapshot.tasks,
                 brainSplitThreshold: BrainSplitRules.clamp(snapshot.brainSplitThreshold),
                 calendarSyncEnabled: snapshot.calendarSyncEnabled,
-                collections: snapshot.collections,
                 // Nodes for tasks that are gone would draw as empty cards.
                 workflows: snapshot.workflows.map { $0.pruned(keeping: Set(snapshot.tasks.map(\.id))) },
+                goals: Self.prunedGoals(snapshot.goals, workflowIDs: Set(snapshot.workflows.map(\.id))),
                 error: nil
             )
         } catch {

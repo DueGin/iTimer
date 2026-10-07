@@ -75,26 +75,6 @@ enum Theme {
     static func lane(tags: [String]) -> Color {
         tags.first.map(tag) ?? focused
     }
-
-    /// Collection colors a user can pick from; orange and pink stay reserved.
-    static let collectionPalette: [Color] = [.blue, .green, .purple, .teal, .brown, .mint, .cyan, .indigo]
-
-    static func collectionColor(index: Int) -> Color {
-        collectionPalette[((index % collectionPalette.count) + collectionPalette.count) % collectionPalette.count]
-    }
-
-    /// Color of a collection by id, from the shared store; gray when the
-    /// task is not filed in one, or the collection is gone.
-    @MainActor
-    static func collection(_ id: UUID?) -> Color {
-        TaskStore.shared.collection(id: id).map { collectionColor(index: $0.color) } ?? .gray
-    }
-
-    /// Lanes follow the collection when the task is filed, else the first tag.
-    @MainActor
-    static func lane(_ span: LaneSpan) -> Color {
-        span.collectionID != nil ? collection(span.collectionID) : lane(tags: span.tags)
-    }
 }
 
 /// Lays chips out left to right, wrapping to new lines as needed.

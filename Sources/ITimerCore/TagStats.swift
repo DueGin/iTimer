@@ -42,26 +42,10 @@ public enum TitleParser {
         var seen: Set<String> = []
         return (lhs + rhs).filter { seen.insert($0.lowercased()).inserted }
     }
-}
 
-/// A user-created group of tasks. Unlike the old category, a collection is
-/// something the user makes on purpose; tasks are filed into it by id.
-public struct TaskCollection: Codable, Equatable, Hashable, Identifiable, Sendable {
-    public var id: UUID
-    public var name: String
-    /// Index into the app's collection palette.
-    public var color: Int
-    public var createdAt: Date
-
-    public init(id: UUID = UUID(), name: String, color: Int, createdAt: Date = Date()) {
-        self.id = id
-        self.name = name
-        self.color = color
-        self.createdAt = createdAt
-    }
-
-    /// Single-line names, capped so a chip stays readable.
-    public static func clean(_ name: String) -> String {
+    /// One tag as typed: a leading `#` dropped, single-line, capped so a
+    /// chip stays readable.
+    public static func cleanTag(_ name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let word = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
         let collapsed = word.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -99,23 +83,5 @@ public enum TagStats {
                 if lhs.duration != rhs.duration { return lhs.duration > rhs.duration }
                 return lhs.tag < rhs.tag
             }
-    }
-}
-
-public enum CollectionStats {
-    public static let uncollected = "未归集"
-    /// Sentinel used by filters to mean "tasks in no collection".
-    public static let uncollectedID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
-
-    /// Display name of the collection a task files under.
-    public static func key(_ task: TaskItem, collections: [TaskCollection]) -> String {
-        guard let id = task.collectionID, let collection = collections.first(where: { $0.id == id }) else {
-            return uncollected
-        }
-        return collection.name
-    }
-
-    public static func slices(tasks: [TaskItem], collections: [TaskCollection], window: DateInterval, now: Date) -> [TagSlice] {
-        TagStats.totals(tasks: tasks, window: window, now: now) { [key($0, collections: collections)] }
     }
 }
