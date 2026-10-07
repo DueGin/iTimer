@@ -15,14 +15,7 @@ struct ITimerApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("新建任务") {
-                    NotificationCenter.default.post(name: .iTimerFocusNewTask, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
-                Button("新建工作流") {
-                    NotificationCenter.default.post(name: .iTimerNewWorkflow, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                NewItemCommands(store: .shared)
             }
             CommandMenu("目标") {
                 GoalCommands(store: .shared)
@@ -47,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        MainWindow.forgetOldLayout()
     }
 
     private var clockTimer: DispatchSourceTimer?
@@ -193,7 +187,6 @@ extension Notification.Name {
     static let iTimerOpenAnalysis = Notification.Name("iTimerOpenAnalysis")
     static let iTimerFocusNewTask = Notification.Name("iTimerFocusNewTask")
     static let iTimerNewSchedule = Notification.Name("iTimerNewSchedule")
-    static let iTimerNewWorkflow = Notification.Name("iTimerNewWorkflow")
     /// Posted by the clock loop; SwiftUI's onDisappear does not fire for
     /// MenuBarExtra panels.
     static let iTimerPanelClosed = Notification.Name("iTimerPanelClosed")

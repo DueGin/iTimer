@@ -20,26 +20,16 @@ enum MainWindow {
         }
     }
 
-    /// Unfolds the main window's sidebar if it was folded away, so a row
-    /// waiting for its name is on screen. Folding is AppKit's own state
-    /// (it is what the window restores), so it is changed there.
-    static func showSidebar() {
-        for window in NSApp.windows {
-            guard let split = firstSplitView(in: window.contentView),
-                  let controller = split.delegate as? NSSplitViewController,
-                  let sidebar = controller.splitViewItems.first(where: { $0.behavior == .sidebar }),
-                  sidebar.isCollapsed else { continue }
-            sidebar.isCollapsed = false
+    /// The split view's remembered layout from before the rail (three
+    /// columns, sidebar possibly folded away) would restore the new one
+    /// wrong. Dropped once, before the window comes up.
+    static func forgetOldLayout() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: "layoutVersion") < 2 else { return }
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("NSSplitView Subview Frames main") {
+            defaults.removeObject(forKey: key)
         }
-    }
-
-    private static func firstSplitView(in view: NSView?) -> NSSplitView? {
-        guard let view else { return nil }
-        if let split = view as? NSSplitView { return split }
-        for subview in view.subviews {
-            if let found = firstSplitView(in: subview) { return found }
-        }
-        return nil
+        defaults.set(2, forKey: "layoutVersion")
     }
 }
 

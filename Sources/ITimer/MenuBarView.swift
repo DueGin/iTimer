@@ -89,6 +89,8 @@ struct MenuBarView: View {
             revealMain()
         }
         .onReceive(NotificationCenter.default.publisher(for: .iTimerFocusNewTask)) { _ in
+            // 文件 › 新建任务 opens the main window's 任务 page.
+            guard embedded else { return }
             draftFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .iTimerNewSchedule)) { note in
@@ -146,7 +148,10 @@ struct MenuBarView: View {
                     suggestionRow
                 }
             }
-            footer
+            // In the main window the rail carries 设置.
+            if !embedded {
+                footer
+            }
         }
     }
 
@@ -797,19 +802,16 @@ struct MenuBarView: View {
 
     // MARK: footer
 
+    /// Panel only.
     private var footer: some View {
         HStack(spacing: 4) {
-            if !embedded {
-                footerButton("打开 iTimer", systemImage: "chart.bar.xaxis", id: "open-analysis") { revealMain() }
-            }
+            footerButton("打开 iTimer", systemImage: "chart.bar.xaxis", id: "open-analysis") { revealMain() }
             footerButton("设置", systemImage: "gearshape", id: "open-settings") {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
             Spacer()
-            if !embedded {
-                footerButton("退出", systemImage: "power", id: "quit-app") { NSApp.terminate(nil) }
-            }
+            footerButton("退出", systemImage: "power", id: "quit-app") { NSApp.terminate(nil) }
         }
         .padding(.horizontal, -8)
     }

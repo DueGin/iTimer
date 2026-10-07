@@ -3,23 +3,44 @@ import SwiftUI
 
 struct MainView: View {
     var store: TaskStore
-    @AppStorage("mainDestination") private var destinationRaw = MainDestination.analysis.raw
+    @AppStorage("mainDestination") private var destinationRaw = MainDestination.tasks.raw
+    /// Where 目标 and 工作流 were last, so switching back returns there.
+    @AppStorage("lastGoalsDestination") private var lastGoalsRaw = MainDestination.goals.raw
+    @AppStorage("lastWorkflowsDestination") private var lastWorkflowsRaw = MainDestination.workflows.raw
+    @AppStorage("listPanelCollapsed") private var listCollapsed = false
+    /// Held at `.all`: the rail must never be folded away with the list.
+    @State private var columns = NavigationSplitViewVisibility.all
     @State private var confettiSeed = 0
     @State private var celebrated: Set<UUID> = []
     @State private var primed = false
 
     var body: some View {
         ZStack {
-            NavigationSplitView {
-                MainSidebar(store: store, selection: selection)
-                    .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
-            } content: {
-                // No title here: the window takes the detail's, so it reads
-                // 注意力分析, the goal's or the workflow's name.
-                MenuBarView(store: store, embedded: true)
-                    .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 440)
+            NavigationSplitView(columnVisibility: $columns) {
+                sidebar
             } detail: {
                 detail
+                    .toolbar {
+                        if module.hasList {
+                            ToolbarItem(placement: .navigation) {
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) { listCollapsed.toggle() }
+                                } label: {
+                                    Label(listCollapsed ? "展开列表" : "收起列表", systemImage: "sidebar.left")
+                                }
+                                .keyboardShortcut("s", modifiers: [.control, .command])
+                                .help(listCollapsed ? "展开\(module.title)列表（⌃⌘S）" : "收起\(module.title)列表（⌃⌘S）")
+                                .accessibilityIdentifier("list-panel-toggle")
+                            }
+                        }
+                    }
+            }
+            .toolbar(removing: .sidebarToggle)
+            .onChange(of: columns) { _, new in
+                if new != .all { columns = .all }
+            }
+            .onChange(of: destinationRaw, initial: true) { _, _ in
+                remember(destination)
             }
             if confettiSeed > 0 {
                 ConfettiView(seed: confettiSeed)
@@ -50,23 +71,103 @@ struct MainView: View {
         }
     }
 
-    /// A workflow or goal that has since been deleted falls back to the analysis.
+    /// A workflow or goal that has since been deleted falls back to its
+    /// module with nothing picked.
     private var destination: MainDestination {
-        let stored = MainDestination(raw: destinationRaw)
-        switch stored {
-        case .workflow(let id) where store.workflow(id: id) == nil: return .analysis
-        case .goal(let id) where store.goal(id: id) == nil: return .analysis
-        default: return stored
+        MainDestination(raw: destinationRaw).resolved(in: store)
+    }
+
+    private var module: MainModule { destination.module(in: store) }
+
+    private var selection: Binding<MainDestination?> {
+        Binding(get: { destination }, set: { go($0 ?? .tasks) })
+    }
+
+    private var showsList: Bool { module.hasList && !listCollapsed }
+
+    /// The rail, and the module's list beside it unless folded. Folding
+    /// narrows the column to the rail instead of hiding it.
+    @ViewBuilder
+    private var sidebar: some View {
+        let rail = MainRail(store: store, module: module, select: open)
+        if showsList {
+            HStack(spacing: 0) {
+                rail
+                Divider()
+                MainSidebar(store: store, module: module, selection: selection)
+            }
+            .navigationSplitViewColumnWidth(min: MainRail.width + 180, ideal: MainRail.width + 220, max: MainRail.width + 320)
+        } else {
+            rail
+                .navigationSplitViewColumnWidth(MainRail.width)
         }
     }
 
-    private var selection: Binding<MainDestination?> {
-        Binding(get: { destination }, set: { destinationRaw = ($0 ?? .analysis).raw })
+    private func go(_ destination: MainDestination) {
+        destinationRaw = destination.raw
+    }
+
+    /// Notes where 目标 or 工作流 is, wherever the change came from (the
+    /// rail, a list row, a roadmap card, the 目标 menu).
+    private func remember(_ destination: MainDestination) {
+        switch destination.module(in: store) {
+        case .goals: lastGoalsRaw = destination.raw
+        case .workflows: lastWorkflowsRaw = destination.raw
+        case .tasks, .analysis: break
+        }
+    }
+
+    /// Switches modules from the rail: back to where that module was left,
+    /// else its first item.
+    private func open(_ target: MainModule) {
+        switch target {
+        case .tasks: go(.tasks)
+        case .analysis: go(.analysis)
+        case .goals:
+            let last = MainDestination(raw: lastGoalsRaw).resolved(in: store)
+            if last.module(in: store) == .goals, last != .goals {
+                go(last)
+            } else {
+                go(store.goals.first.map { .goal($0.id) } ?? .goals)
+            }
+        case .workflows:
+            let last = MainDestination(raw: lastWorkflowsRaw).resolved(in: store)
+            if last.module(in: store) == .workflows, last != .workflows {
+                go(last)
+            } else {
+                go(store.standaloneWorkflows.first.map { .workflow($0.id) } ?? .workflows)
+            }
+        }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch destination {
+        case .tasks:
+            MenuBarView(store: store, embedded: true)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+                .navigationTitle("任务")
+        case .goals:
+            ContentUnavailableView {
+                Label("还没有目标", systemImage: "flag.checkered")
+            } description: {
+                Text("想做成一件大事？先定个目标，再把路上的里程碑排出先后：先做什么，后做什么。")
+            } actions: {
+                Button("新建目标") { createGoal() }
+                    .accessibilityIdentifier("empty-new-goal")
+            }
+            .navigationTitle("目标")
+        case .workflows:
+            ContentUnavailableView {
+                Label("没有独立的工作流", systemImage: "point.3.connected.trianglepath.dotted")
+            } description: {
+                Text("把要按顺序推进的事画成一张图：谁先谁后，前一步做完，下一步就亮起来。")
+            } actions: {
+                Button("新建工作流") { createWorkflow() }
+                    .accessibilityIdentifier("empty-new-workflow")
+            }
+            .navigationTitle("工作流")
         case .analysis:
             AnalysisView(store: store)
                 .navigationTitle("注意力分析")
@@ -80,7 +181,7 @@ struct MainView: View {
                     ToolbarItem(placement: .navigation) {
                         if let goal {
                             Button {
-                                destinationRaw = MainDestination.goal(goal.id).raw
+                                go(.goal(goal.id))
                             } label: {
                                 Label("返回路线图", systemImage: "chevron.backward")
                             }
@@ -91,10 +192,24 @@ struct MainView: View {
                 }
         case .goal(let id):
             GoalCanvasView(store: store, goalID: id) { workflowID in
-                destinationRaw = MainDestination.workflow(workflowID).raw
+                go(.workflow(workflowID))
             }
             .id(id)
             .navigationTitle(store.goal(id: id)?.name ?? "目标")
         }
+    }
+
+    private func createGoal() {
+        guard let goal = store.addGoal("新目标") else { return }
+        MainRouter.shared.pendingRename = .goal(goal.id)
+        listCollapsed = false
+        go(.goal(goal.id))
+    }
+
+    private func createWorkflow() {
+        guard let workflow = store.addWorkflow("新工作流") else { return }
+        MainRouter.shared.pendingRename = .workflow(workflow.id)
+        listCollapsed = false
+        go(.workflow(workflow.id))
     }
 }

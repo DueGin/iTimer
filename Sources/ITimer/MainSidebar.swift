@@ -1,16 +1,25 @@
 import ITimerCore
 import SwiftUI
 
-/// What the main window's right-hand column shows.
+/// What the main window's right-hand side shows.
 enum MainDestination: Hashable {
+    case tasks
     case analysis
+    /// The 目标 module with no goal picked (there is none yet).
+    case goals
+    /// The 工作流 module with no workflow picked.
+    case workflows
     case workflow(UUID)
     case goal(UUID)
 
-    /// Stored form for @AppStorage: "analysis", "workflow:<uuid>" or "goal:<uuid>".
+    /// Stored form for @AppStorage: "tasks", "analysis", "goals",
+    /// "workflows", "workflow:<uuid>" or "goal:<uuid>".
     var raw: String {
         switch self {
+        case .tasks: "tasks"
         case .analysis: "analysis"
+        case .goals: "goals"
+        case .workflows: "workflows"
         case .workflow(let id): "workflow:\(id.uuidString)"
         case .goal(let id): "goal:\(id.uuidString)"
         }
@@ -22,16 +31,80 @@ enum MainDestination: Hashable {
         } else if raw.hasPrefix("goal:"), let id = UUID(uuidString: String(raw.dropFirst("goal:".count))) {
             self = .goal(id)
         } else {
-            self = .analysis
+            switch raw {
+            case "analysis": self = .analysis
+            case "goals": self = .goals
+            case "workflows": self = .workflows
+            default: self = .tasks
+            }
+        }
+    }
+
+    /// The rail entry this belongs to. A milestone's workflow is part of
+    /// its goal, so it stays under 目标.
+    @MainActor
+    func module(in store: TaskStore) -> MainModule {
+        switch self {
+        case .tasks: .tasks
+        case .analysis: .analysis
+        case .goals, .goal: .goals
+        case .workflows: .workflows
+        case .workflow(let id): store.goal(containing: id) == nil ? .workflows : .goals
+        }
+    }
+
+    /// What is left to show once the item it points at has been deleted.
+    @MainActor
+    func resolved(in store: TaskStore) -> MainDestination {
+        switch self {
+        case .goal(let id) where store.goal(id: id) == nil: .goals
+        case .workflow(let id) where store.workflow(id: id) == nil: .workflows
+        default: self
         }
     }
 }
 
-/// Main window sidebar: the analysis, every goal with its milestones under
-/// it, then the workflows that are not on any goal.
+/// The main window's rail entries, top to bottom.
+enum MainModule: String, CaseIterable {
+    case tasks
+    case goals
+    case workflows
+    case analysis
+
+    var title: String {
+        switch self {
+        case .tasks: "任务"
+        case .goals: "目标"
+        case .workflows: "工作流"
+        case .analysis: "分析"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .tasks: "checklist"
+        case .goals: "flag.checkered"
+        case .workflows: "point.3.connected.trianglepath.dotted"
+        case .analysis: "chart.xyaxis.line"
+        }
+    }
+
+    /// ⌘1 to ⌘4.
+    var shortcut: KeyEquivalent {
+        KeyEquivalent(Character(String((Self.allCases.firstIndex(of: self) ?? 0) + 1)))
+    }
+
+    /// Modules with a list panel next to the rail.
+    var hasList: Bool { self == .goals || self == .workflows }
+}
+
+/// The list panel next to the rail: every goal with its milestones under
+/// it (目标), or the workflows that are not on any goal (工作流).
 struct MainSidebar: View {
     var store: TaskStore
+    var module: MainModule
     @Binding var selection: MainDestination?
+    @AppStorage("listPanelCollapsed") private var listCollapsed = false
     /// Goals whose milestones are folded away, as comma-joined ids.
     @AppStorage("collapsedGoals") private var collapsedGoalsRaw = ""
     @State private var renaming: MainRouter.Rename?
@@ -48,12 +121,7 @@ struct MainSidebar: View {
 
     var body: some View {
         List(selection: $selection) {
-            Section("视图") {
-                Label("注意力分析", systemImage: "chart.xyaxis.line")
-                    .tag(MainDestination.analysis)
-                    .accessibilityIdentifier("sidebar-analysis")
-            }
-            Section("目标") {
+            if module == .goals {
                 ForEach(Array(store.goals.enumerated()), id: \.element.id) { index, goal in
                     goalRow(goal, index: index)
                         .tag(MainDestination.goal(goal.id))
@@ -66,39 +134,48 @@ struct MainSidebar: View {
                     }
                 }
                 if store.goals.isEmpty {
-                    Text("想做成一件大事？先定个目标，再把路上的里程碑排出先后：先做什么，后做什么。")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .selectionDisabled()
+                    hint("想做成一件大事？先定个目标，再把路上的里程碑排出先后：先做什么，后做什么。")
                 }
-            }
-            Section("工作流") {
+            } else {
                 let standalone = store.standaloneWorkflows
                 ForEach(Array(standalone.enumerated()), id: \.element.id) { index, workflow in
                     workflowRow(workflow, milestoneOf: nil, index: index, count: standalone.count)
                         .tag(MainDestination.workflow(workflow.id))
                 }
-                if store.workflows.isEmpty {
-                    Text("把要按顺序推进的事画成一张图：谁先谁后，前一步做完，下一步就亮起来。")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .selectionDisabled()
+                if standalone.isEmpty {
+                    hint(store.workflows.isEmpty
+                        ? "把要按顺序推进的事画成一张图：谁先谁后，前一步做完，下一步就亮起来。"
+                        : "工作流都在目标的路线图上了。不属于任何目标的工作流会列在这里。")
                 }
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Text(module.title)
+                    .font(.headline)
+                Spacer()
+                IconButton(
+                    title: module == .goals ? "新建目标（⌥⌘N）" : "新建工作流（⇧⌘N）",
+                    systemImage: "plus",
+                    identifier: "sidebar-add",
+                    action: module == .goals ? createGoal : createWorkflow
+                )
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 10)
+            .padding(.vertical, 8)
+        }
         .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 0) {
-                bottomButton("新建目标", systemImage: "flag", help: "新建目标（⌥⌘N）", id: "sidebar-new-goal", action: createGoal)
-                bottomButton("新建工作流", systemImage: "plus", help: "新建工作流（⇧⌘N）", id: "sidebar-new-workflow", action: createWorkflow)
+            Group {
+                if module == .goals {
+                    bottomButton("新建目标", systemImage: "flag", help: "新建目标（⌥⌘N）", id: "sidebar-new-goal", action: createGoal)
+                } else {
+                    bottomButton("新建工作流", systemImage: "plus", help: "新建工作流（⇧⌘N）", id: "sidebar-new-workflow", action: createWorkflow)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .iTimerNewWorkflow)) { _ in
-            createWorkflow()
         }
         .onChange(of: MainRouter.shared.pendingRename, initial: true) { _, request in
             guard let request else { return }
@@ -123,7 +200,9 @@ struct MainSidebar: View {
         ) {
             Button("删除工作流", role: .destructive) {
                 guard let doomed else { return }
-                if selection == .workflow(doomed.id) { selection = .analysis }
+                if selection == .workflow(doomed.id) {
+                    selection = store.goal(containing: doomed.id).map { .goal($0.id) } ?? .workflows
+                }
                 store.removeWorkflow(id: doomed.id)
                 self.doomed = nil
             }
@@ -141,7 +220,9 @@ struct MainSidebar: View {
         ) {
             Button("删除目标", role: .destructive) {
                 guard let doomedGoal else { return }
-                if selection == .goal(doomedGoal.id) { selection = .analysis }
+                let showing = selection == .goal(doomedGoal.id)
+                    || doomedGoal.nodes.contains { selection == .workflow($0.workflowID) }
+                if showing { selection = .goals }
                 store.removeGoal(id: doomedGoal.id)
                 self.doomedGoal = nil
             }
@@ -278,6 +359,14 @@ struct MainSidebar: View {
         }
     }
 
+    private func hint(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .selectionDisabled()
+    }
+
     private func countBadge(_ count: Int, help: String) -> some View {
         Text("\(count)")
             .font(.caption2.weight(.bold).monospacedDigit())
@@ -343,7 +432,7 @@ struct MainSidebar: View {
         nameDraft = name
         nameHadFocus = false
         renaming = target
-        MainWindow.showSidebar()
+        listCollapsed = false
         // The row may not be on screen yet (a window that is just opening),
         // and the page it opens claims focus as it appears: keep asking
         // until the field has it.
