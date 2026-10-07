@@ -102,6 +102,11 @@ struct MainView: View {
                 }
             }
         }
+        // The column takes its new width a beat after the content changes;
+        // pinned left, the rail stays put instead of sliding in from the
+        // middle of the old width.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .clipped()
         // The system's toggle would hide the rail along with the list.
         .toolbar(removing: .sidebarToggle)
         // Folding narrows the column to the rail instead of hiding it.
