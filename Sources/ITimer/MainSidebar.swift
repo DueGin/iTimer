@@ -95,7 +95,26 @@ enum MainModule: String, CaseIterable {
     }
 
     /// Modules with a list panel next to the rail.
-    var hasList: Bool { self == .goals || self == .workflows }
+    var hasList: Bool { self != .analysis }
+}
+
+/// Top of a list panel: the module's name and its + button.
+struct ListPanelHeader: View {
+    var title: String
+    var addHelp: String
+    var add: () -> Void
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.headline)
+            Spacer()
+            IconButton(title: addHelp, systemImage: "plus", identifier: "sidebar-add", action: add)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 10)
+        .padding(.vertical, 8)
+    }
 }
 
 /// The list panel next to the rail: every goal with its milestones under
@@ -151,20 +170,11 @@ struct MainSidebar: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Text(module.title)
-                    .font(.headline)
-                Spacer()
-                IconButton(
-                    title: module == .goals ? "新建目标（⌥⌘N）" : "新建工作流（⇧⌘N）",
-                    systemImage: "plus",
-                    identifier: "sidebar-add",
-                    action: module == .goals ? createGoal : createWorkflow
-                )
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 10)
-            .padding(.vertical, 8)
+            ListPanelHeader(
+                title: module.title,
+                addHelp: module == .goals ? "新建目标（⌥⌘N）" : "新建工作流（⇧⌘N）",
+                add: module == .goals ? createGoal : createWorkflow
+            )
         }
         .safeAreaInset(edge: .bottom) {
             Group {

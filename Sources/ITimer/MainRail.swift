@@ -8,7 +8,9 @@ struct MainRail: View {
     var module: MainModule
     var select: (MainModule) -> Void
 
-    static let width: CGFloat = 56
+    /// Wide enough for the window's close / minimize / zoom buttons, so
+    /// the sidebar keeps running up under the title bar.
+    static let width: CGFloat = 76
 
     var body: some View {
         VStack(spacing: 6) {
@@ -24,8 +26,7 @@ struct MainRail: View {
             .accessibilityLabel("设置")
             .accessibilityIdentifier("rail-settings")
         }
-        // Below the window's close / minimize / zoom buttons.
-        .padding(.top, 38)
+        .padding(.top, 10)
         .padding(.bottom, 12)
         .frame(width: Self.width)
         .frame(maxHeight: .infinity)

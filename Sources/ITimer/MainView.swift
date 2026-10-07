@@ -8,6 +8,7 @@ struct MainView: View {
     @AppStorage("lastGoalsDestination") private var lastGoalsRaw = MainDestination.goals.raw
     @AppStorage("lastWorkflowsDestination") private var lastWorkflowsRaw = MainDestination.workflows.raw
     @AppStorage("listPanelCollapsed") private var listCollapsed = false
+    @AppStorage("taskFilter") private var taskFilterRaw = TaskFilter.all.raw
     /// Held at `.all`: the rail must never be folded away with the list.
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var confettiSeed = 0
@@ -35,7 +36,6 @@ struct MainView: View {
                         }
                     }
             }
-            .toolbar(removing: .sidebarToggle)
             .onChange(of: columns) { _, new in
                 if new != .all { columns = .all }
             }
@@ -85,22 +85,31 @@ struct MainView: View {
 
     private var showsList: Bool { module.hasList && !listCollapsed }
 
-    /// The rail, and the module's list beside it unless folded. Folding
-    /// narrows the column to the rail instead of hiding it.
-    @ViewBuilder
+    private var taskFilter: Binding<TaskFilter> {
+        Binding(get: { TaskFilter(raw: taskFilterRaw) }, set: { taskFilterRaw = $0.raw })
+    }
+
+    /// The rail, and the module's list beside it unless folded.
     private var sidebar: some View {
-        let rail = MainRail(store: store, module: module, select: open)
-        if showsList {
-            HStack(spacing: 0) {
-                rail
+        HStack(spacing: 0) {
+            MainRail(store: store, module: module, select: open)
+            if showsList {
                 Divider()
-                MainSidebar(store: store, module: module, selection: selection)
+                if module == .tasks {
+                    TaskListPanel(store: store, filter: taskFilter)
+                } else {
+                    MainSidebar(store: store, module: module, selection: selection)
+                }
             }
-            .navigationSplitViewColumnWidth(min: MainRail.width + 180, ideal: MainRail.width + 220, max: MainRail.width + 320)
-        } else {
-            rail
-                .navigationSplitViewColumnWidth(MainRail.width)
         }
+        // The system's toggle would hide the rail along with the list.
+        .toolbar(removing: .sidebarToggle)
+        // Folding narrows the column to the rail instead of hiding it.
+        .navigationSplitViewColumnWidth(
+            min: showsList ? MainRail.width + 200 : MainRail.width,
+            ideal: showsList ? MainRail.width + 230 : MainRail.width,
+            max: showsList ? MainRail.width + 320 : MainRail.width
+        )
     }
 
     private func go(_ destination: MainDestination) {
@@ -144,10 +153,11 @@ struct MainView: View {
     private var detail: some View {
         switch destination {
         case .tasks:
-            MenuBarView(store: store, embedded: true)
+            let filter = TaskFilter(raw: taskFilterRaw)
+            MenuBarView(store: store, embedded: true, filter: filter)
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
-                .navigationTitle("任务")
+                .navigationTitle(filter == .all ? "任务" : "任务 › \(filter.title)")
         case .goals:
             ContentUnavailableView {
                 Label("还没有目标", systemImage: "flag.checkered")

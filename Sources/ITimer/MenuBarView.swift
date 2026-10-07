@@ -5,6 +5,8 @@ import SwiftUI
 struct MenuBarView: View {
     var store: TaskStore
     var embedded = false
+    /// The main window's 任务 page lists one status or tag; the panel all.
+    var filter: TaskFilter = .all
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @State private var draft = ""
@@ -397,10 +399,12 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private func taskList(now: Date) -> some View {
-        let done = store.completedToday()
+        let done = filter.showsDone ? store.completedToday().filter(filter.admits) : []
         let sections = statusSections(now: now)
         if sections.isEmpty && done.isEmpty {
-            Text("没有人生的计时是白费的——输入任务回车立即计时，或点「日程」安排未来的事。")
+            Text(filter == .all
+                ? "没有人生的计时是白费的——输入任务回车立即计时，或点「日程」安排未来的事。"
+                : "「\(filter.title)」里现在没有任务。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -473,15 +477,17 @@ struct MenuBarView: View {
     /// running subtask pulls its whole group into 进行中. A subtask whose
     /// parent is done (or gone) stands on its own.
     private func statusSections(now: Date) -> [StatusSection] {
+        guard filter != .doneToday else { return [] }
         let pending = store.tasks.filter(\.isPending)
         let byStart: (TaskItem, TaskItem) -> Bool = { ($0.scheduledStart ?? $0.createdAt) < ($1.scheduledStart ?? $1.createdAt) }
-        let ordered: [(ListSection, [TaskItem])] = [
+        let all: [(ListSection, [TaskItem])] = [
             (.due, pending.filter { $0.isDue(asOf: now) }.sorted(by: byStart)),
             (.running, store.runningTasks),
             (.paused, store.pausedTasks),
             (.upcoming, pending.filter { !$0.isDue(asOf: now) && !$0.isUndated }.sorted(by: byStart)),
             (.undated, store.undatedSchedules),
         ]
+        let ordered = all.map { ($0.0, $0.1.filter(filter.admits)) }
         let open = ordered.flatMap(\.1)
         var rank: [UUID: (section: ListSection, position: Int)] = [:]
         for (section, tasks) in ordered {
@@ -494,7 +500,7 @@ struct MenuBarView: View {
             groups[lead.section, default: []].append((lead.position, group))
         }
         return ListSection.allCases.compactMap { kind in
-            guard let placed = groups[kind] else { return nil }
+            guard let placed = groups[kind], filter.section.map({ $0 == kind.rawValue }) ?? true else { return nil }
             let members = placed.sorted { $0.position < $1.position }.map(\.group)
             let count = members.flatMap(\.rows).filter { rank[$0.id]?.section == kind }.count
             return StatusSection(kind: kind, groups: members, count: count)

@@ -971,56 +971,65 @@ extension SelfTest {
     }
 
     /// The rail switches modules and brings 目标 back to the roadmap it
-    /// left; folding the list narrows the sidebar to the rail, which stays.
+    /// left; 任务 lists by status or tag; folding the list narrows the
+    /// sidebar to the rail, which stays.
     private static func exerciseRail(in window: NSWindow, goal: Goal) async -> Bool {
-        let destination = { UserDefaults.standard.string(forKey: "mainDestination") }
+        let defaults = UserDefaults.standard
+        let destination = { defaults.string(forKey: "mainDestination") }
         func sidebarWidth() -> CGFloat {
             collect(NSSplitView.self, in: window.contentView).first?.arrangedSubviews.first?.frame.width ?? 0
         }
+        let onlyRail = { abs(sidebarWidth() - MainRail.width) < 2 }
         let goalRow = "sidebar-goal-\(goal.id.uuidString)"
         guard pressElement("rail-tasks"),
               await wait(for: 3, label: "tasks module", until: {
                   destination() == MainDestination.tasks.raw
                       && find(identifier: "new-task-field") != nil && find(identifier: "goal-title") == nil
+              }),
+              await wait(for: 2, label: "task lists", until: {
+                  sidebarWidth() > 200 && find(identifier: "task-filter-all", depth: 20) != nil
               }) else {
-            note("rail 任务 did not show the task list: \(destination() ?? "nil")")
+            note("rail 任务 did not show the task list with its lists: \(destination() ?? "nil") width=\(sidebarWidth())")
             return false
         }
-        guard await wait(for: 2, label: "rail only", until: { abs(sidebarWidth() - MainRail.width) < 2 }) else {
-            note("任务 has no list, but the sidebar is \(sidebarWidth()) wide")
+        defaults.set(TaskFilter.doneToday.raw, forKey: "taskFilter")
+        guard await wait(for: 2, label: "filter", until: { window.title == "任务 › 今日完成" }) else {
+            note("picking 今日完成 did not filter the page: title=\(window.title)")
             return false
         }
         snapshot(window, to: "/tmp/itimer-layout-tasks.png")
-        note("rail 任务 showed the task list, sidebar narrowed to the rail")
+        defaults.set(TaskFilter.all.raw, forKey: "taskFilter")
+        note("rail 任务 showed the task list beside its status and tag lists")
+
+        guard pressElement("list-panel-toggle"),
+              await wait(for: 3, label: "list folded", until: {
+                  onlyRail() && find(identifier: "task-filter-all", depth: 20) == nil
+              }),
+              find(identifier: "rail-tasks") != nil, find(identifier: "new-task-field") != nil else {
+            note("folding the list did not leave just the rail: width=\(sidebarWidth())")
+            return false
+        }
+        snapshot(window, to: "/tmp/itimer-layout-collapsed.png")
+        guard pressElement("rail-analysis"),
+              await wait(for: 3, label: "analysis", until: { destination() == MainDestination.analysis.raw && onlyRail() }) else {
+            note("rail 分析 did not show the analysis beside the bare rail: width=\(sidebarWidth())")
+            return false
+        }
+        note("list folded to the rail; 分析 has none")
 
         guard pressElement("rail-goals"),
               await wait(for: 3, label: "goals module", until: {
                   destination() == MainDestination.goal(goal.id).raw && find(identifier: "goal-title") != nil
               }),
-              await wait(for: 2, label: "list shown", until: { sidebarWidth() > 200 && find(identifier: goalRow, depth: 20) != nil }) else {
-            note("rail 目标 did not return to the roadmap with its list: \(destination() ?? "nil") width=\(sidebarWidth())")
-            return false
-        }
-        note("rail 目标 returned to the roadmap it left, list beside the rail")
-
-        guard pressElement("list-panel-toggle"),
-              await wait(for: 3, label: "list folded", until: {
-                  abs(sidebarWidth() - MainRail.width) < 2 && find(identifier: goalRow, depth: 20) == nil
-              }),
-              find(identifier: "rail-goals") != nil, find(identifier: "goal-title") != nil else {
-            note("folding the list did not leave just the rail: width=\(sidebarWidth())")
-            return false
-        }
-        snapshot(window, to: "/tmp/itimer-layout-collapsed.png")
-        guard pressElement("list-panel-toggle"),
+              pressElement("list-panel-toggle"),
               await wait(for: 3, label: "list unfolded", until: {
                   sidebarWidth() > 200 && find(identifier: goalRow, depth: 20) != nil
               }) else {
-            note("unfolding the list did not bring it back: width=\(sidebarWidth())")
+            note("rail 目标 did not return to the roadmap, or its list did not unfold: \(destination() ?? "nil") width=\(sidebarWidth())")
             return false
         }
         snapshot(window, to: "/tmp/itimer-layout-expanded.png")
-        note("list folded to the rail and back")
+        note("rail 目标 returned to the roadmap it left; the list unfolded beside the rail")
         return true
     }
 
