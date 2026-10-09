@@ -895,10 +895,12 @@ final class LabelTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
     private var directories: [URL] = []
 
-    override func tearDown() {
-        directories.forEach { try? FileManager.default.removeItem(at: $0) }
-        directories = []
-        super.tearDown()
+    override func tearDown() async throws {
+        await MainActor.run {
+            directories.forEach { try? FileManager.default.removeItem(at: $0) }
+            directories = []
+        }
+        try await super.tearDown()
     }
 
     private func makeStore() -> TaskStore {

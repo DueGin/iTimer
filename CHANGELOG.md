@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.8.1] - 2026-10-09
+
+### 修复
+
+- 修复发版流程构建失败、无法生成 DMG 安装包的问题。
+
 ## [1.8.0] - 2026-10-09
 
 ### 新增
@@ -132,7 +138,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/DueGin/iTimer/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/DueGin/iTimer/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/DueGin/iTimer/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/DueGin/iTimer/compare/v1.5.0...v1.6.0
