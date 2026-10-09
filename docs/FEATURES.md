@@ -1,6 +1,6 @@
 # iTimer 功能清单
 
-当前版本 **1.7.0**（build 11）· 更新于 2026-10-07
+当前版本 **1.8.0**（build 12）· 更新于 2026-10-09
 
 这份清单列出 iTimer 现在有的功能，一行一个，写明它做什么、从哪个版本开始有。改动功能的提交要同时更新这里，规则见 [AGENTS.md](../AGENTS.md)。每个版本具体改了什么见 [CHANGELOG](../CHANGELOG.md)，面向用户的完整用法见 [README](../README.md)。
 
@@ -174,6 +174,15 @@
 |---|---|---|
 | 本地存储 | 所有数据存在 `~/Library/Application Support/iTimer/state.json`，只在本机，不联网 | 1.0 |
 | 旧数据兼容 | 当前数据版本是 3，旧版本的文件照常打开：旧的单个日历事件 ID 自动迁移，已移除的分类和任务集合加载时忽略，加载时剪掉不存在的工作流，一个工作流只留在一个目标里 | 1.0（数据版本 3 是 1.7.0 起） |
+
+## 13. 下载与安装
+
+代码：`.github/workflows/release.yml`、`scripts/build-app.sh`、`scripts/build-dmg.sh`、`scripts/prepare-release.py`
+
+| 功能 | 说明 | 版本 |
+|---|---|---|
+| 分架构安装包 | GitHub Release 提供 Apple Silicon（arm64）和 Intel（x86_64）两个 DMG，打开后将 iTimer 拖入 Applications；要求 macOS 14 或更新版本 | 1.8.0 |
+| 下载校验 | 每个 Release 附带 SHA256SUMS，可核对两个安装包的 SHA-256 校验值 | 1.8.0 |
 
 ## 已移除
 

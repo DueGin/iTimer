@@ -1,0 +1,116 @@
+name: 发布 iTimer
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: 构建与测试 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      ARCH: ${{ matrix.arch }}
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - name: 检出版本代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: 检查版本与构建环境
+        run: |
+          python3 scripts/prepare-release.py "$RELEASE_TAG" dist/release-notes.md
+          test "$(uname -m)" = "$ARCH"
+          xcodebuild -version
+          swift --version
+
+      - name: 运行核心测试
+        run: swift test
+
+      - name: 构建应用
+        run: ./scripts/build-app.sh release "$ARCH"
+
+      - name: 打包并校验 DMG
+        run: ./scripts/build-dmg.sh "$ARCH"
+
+      - name: 保存安装包
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: dist/iTimer-*-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: 发布 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: 检出版本代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: 生成 Release 说明
+        run: python3 scripts/prepare-release.py "$RELEASE_TAG" dist/release-notes.md
+
+      - name: 下载两个架构的安装包
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dmg-*
+          path: dist/assets
+          merge-multiple: true
+
+      - name: 生成 SHA-256 校验值
+        working-directory: dist/assets
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          test -f "iTimer-${VERSION}-macos-arm64.dmg"
+          test -f "iTimer-${VERSION}-macos-x86_64.dmg"
+          sha256sum "iTimer-${VERSION}-macos-arm64.dmg" \
+            "iTimer-${VERSION}-macos-x86_64.dmg" > SHA256SUMS
+
+      - name: 上传附件并发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if IS_DRAFT="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')"; then
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "Release $RELEASE_TAG 已发布，不覆盖已有版本。" >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "iTimer ${RELEASE_TAG#v}" --notes-file dist/release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" dist/assets/*.dmg dist/assets/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --notes-file dist/release-notes.md

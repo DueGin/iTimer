@@ -6,6 +6,19 @@
 
 「脑裂（split-brain）」本是分布式系统的术语：集群里的节点各自为政、互相打架。你的注意力也一样。
 
+## 下载与安装
+
+前往 [GitHub Releases](https://github.com/DueGin/iTimer/releases/latest) 下载 DMG，要求 macOS 14 或更新版本。在「关于本机」查看芯片类型：
+
+| Mac 芯片 | 安装包文件名 |
+|---|---|
+| Apple Silicon（M 系列） | `iTimer-x.y.z-macos-arm64.dmg` |
+| Intel | `iTimer-x.y.z-macos-x86_64.dmg` |
+
+打开 DMG，将 iTimer 拖到 Applications。每个 Release 附带 `SHA256SUMS`，可用 `shasum -a 256` 校验下载的安装包。
+
+当前安装包使用临时签名，尚未经过 Apple Developer ID 签名和公证。首次打开如被 macOS 拦截，请在「系统设置 › 隐私与安全性」中选择「仍要打开」。
+
 ## 定位
 
 | | |
@@ -101,10 +114,26 @@
 
 ```bash
 ./scripts/build-app.sh release   # 输出 dist/iTimer.app
+./scripts/build-dmg.sh           # 打包本机架构的 DMG
 swift test                       # 核心逻辑测试
 ```
 
+指定架构构建和打包：`./scripts/build-app.sh release arm64` 后运行 `./scripts/build-dmg.sh arm64`；Intel 版把 `arm64` 换成 `x86_64`。
+
 数据保存在 `~/Library/Application Support/iTimer/state.json`。
+
+## 自动发版
+
+按 [发版约定](AGENTS.md#发版) 更新应用版本号、build 号和版本文档，提交后推送 `vx.y.z` 格式的 tag：
+
+```bash
+git tag v1.8.1                   # 示例：应用版本号须已更新为 1.8.1
+git push origin v1.8.1
+```
+
+[发版流水线](.github/workflows/release.yml) 会检查 tag 与应用版本号是否一致，以及 CHANGELOG 是否有对应版本的更新内容；在 Apple Silicon 和 Intel runner 上分别运行核心测试、构建应用并打包。两边都成功后，自动创建 GitHub Release，上传两个 DMG 和 `SHA256SUMS`，更新说明取自该版本的 CHANGELOG。
+
+流水线使用 GitHub 自带的 `GITHUB_TOKEN`，发布 job 有 `contents: write` 权限，无需配置额外 Secret。上传附件时先创建草稿，全部上传成功再公开；失败后可在 Actions 中重新运行，继续上传草稿中的附件。已公开的 Release 不会被覆盖。
 
 ## 更多文档
 

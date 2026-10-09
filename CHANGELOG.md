@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.8.0] - 2026-10-09
+
+### 新增
+
+- GitHub Release 提供适用于 Apple Silicon 和 Intel Mac 的独立 DMG 安装包，附带 SHA-256 校验值。
+
 ## [1.7.0] - 2026-10-07
 
 ### 新增
@@ -126,7 +132,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.7.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/DueGin/iTimer/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/DueGin/iTimer/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/DueGin/iTimer/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/DueGin/iTimer/releases/tag/v1.5.0
