@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.8.2] - 2026-10-09
+
 ### 修复
 
 - 修复发版构建时的兼容性问题，让 Apple Silicon 和 Intel 安装包能够正常生成。
@@ -142,7 +144,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.1...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/DueGin/iTimer/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/DueGin/iTimer/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/DueGin/iTimer/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/DueGin/iTimer/compare/v1.6.0...v1.7.0
