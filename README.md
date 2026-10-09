@@ -106,4 +106,9 @@ swift test                       # 核心逻辑测试
 
 数据保存在 `~/Library/Application Support/iTimer/state.json`。
 
+## 更多文档
+
+- [功能清单](docs/FEATURES.md)：现有功能一览，标明每项从哪个版本开始有
+- [更新日志](CHANGELOG.md)：每个版本改了什么
+
 MIT License
