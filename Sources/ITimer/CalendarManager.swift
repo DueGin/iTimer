@@ -21,7 +21,16 @@ final class EventKitSync: TaskCalendarSyncing {
     func requestAccess() async -> Bool {
         if case .granted = availability { return true }
         do {
-            return try await eventStore.requestFullAccessToEvents()
+            // Keep the store on MainActor when building with older SDKs.
+            return try await withCheckedThrowingContinuation { continuation in
+                eventStore.requestFullAccessToEvents { granted, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: granted)
+                    }
+                }
+            }
         } catch {
             return false
         }
