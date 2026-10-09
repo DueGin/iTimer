@@ -890,19 +890,17 @@ final class ScheduleTests: XCTestCase {
     }
 }
 
-@MainActor
 final class LabelTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
     private var directories: [URL] = []
 
-    override func tearDown() async throws {
-        await MainActor.run {
-            directories.forEach { try? FileManager.default.removeItem(at: $0) }
-            directories = []
-        }
-        try await super.tearDown()
+    override func tearDown() {
+        directories.forEach { try? FileManager.default.removeItem(at: $0) }
+        directories = []
+        super.tearDown()
     }
 
+    @MainActor
     private func makeStore() -> TaskStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("itimer-labels-\(UUID().uuidString)", isDirectory: true)
@@ -910,6 +908,7 @@ final class LabelTests: XCTestCase {
         return TaskStore(url: directory.appendingPathComponent("state.json"), now: t0)
     }
 
+    @MainActor
     func testParserExtractsTagsAndRoundTrips() {
         let parsed = TitleParser.parse("写周报 #汇报 #周报")
         XCTAssertEqual(parsed.title, "写周报")
@@ -920,6 +919,7 @@ final class LabelTests: XCTestCase {
         XCTAssertEqual(TitleParser.parse("a @学习").title, "a @学习")
     }
 
+    @MainActor
     func testLegacyCategoryFileStillDecodes() throws {
         let legacy = #"{"brainSplitThreshold":3,"categories":[{"name":"工作","color":0}],"tasks":[{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[],"category":"工作"}]}"#
         let decoder = JSONDecoder()
@@ -929,6 +929,7 @@ final class LabelTests: XCTestCase {
         XCTAssertNil(snapshot.tasks[0].parentID)
     }
 
+    @MainActor
     func testVersion16FileWithCollectionsOpensAndDropsThem() throws {
         let id = UUID().uuidString
         let collection = UUID().uuidString
@@ -955,6 +956,7 @@ final class LabelTests: XCTestCase {
         XCTAssertNil(tasks.first?["collectionID"])
     }
 
+    @MainActor
     func testTaggedTasksFeedSuggestions() {
         let store = makeStore()
         let task = store.addTask(title: "写周报 #汇报", at: t0)!
@@ -964,6 +966,7 @@ final class LabelTests: XCTestCase {
         XCTAssertTrue(store.suggestions().contains("写周报 #汇报"))
     }
 
+    @MainActor
     func testRetitleAndTags() {
         let store = makeStore()
         let task = store.addTask(title: "写周报", at: t0)!
@@ -984,6 +987,7 @@ final class LabelTests: XCTestCase {
         XCTAssertFalse(store.retitle(id: task.id, input: "#只有标签"))
     }
 
+    @MainActor
     func testScheduleMergesPickedTags() {
         let store = makeStore()
         let item = store.addSchedule(
@@ -997,6 +1001,7 @@ final class LabelTests: XCTestCase {
         XCTAssertEqual(item.tags, ["汇报", "PPT"])
     }
 
+    @MainActor
     func testSubtasksStayOneLevel() {
         let store = makeStore()
         let parent = store.addTask(title: "写周报", at: t0)!
@@ -1019,6 +1024,7 @@ final class LabelTests: XCTestCase {
         XCTAssertNotNil(store.tasks.first { $0.id == stray.id })
     }
 
+    @MainActor
     func testNoteAndCommentsPersistAndLegacyTasksHaveNone() throws {
         let legacy = #"{"id":"\#(UUID().uuidString)","title":"x","createdAt":"2023-11-14T22:13:20Z","segments":[]}"#
         let decoder = JSONDecoder()

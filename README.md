@@ -124,6 +124,8 @@ swift test                       # 核心逻辑测试
 
 ## 自动发版
 
+流水线会在 `main` 推送和 Pull Request 时，检查 Apple Silicon 和 Intel 两个架构的核心测试、应用构建和 DMG 打包。发版前先确认这些检查通过。
+
 按 [发版约定](AGENTS.md#发版) 更新应用版本号、build 号和版本文档，提交后推送 `vx.y.z` 格式的 tag：
 
 ```bash
@@ -135,7 +137,7 @@ git push origin v1.8.1
 
 流水线使用 GitHub 自带的 `GITHUB_TOKEN`，发布 job 有 `contents: write` 权限，无需配置额外 Secret。上传附件时先创建草稿，全部上传成功再公开；失败后可在 Actions 中重新运行，继续上传草稿中的附件。已公开的 Release 不会被覆盖。
 
-如果 tag 推送后没有出现运行记录，可在 Actions ›「发布 iTimer」› Run workflow 中选择 `main`，填入已有的版本 tag（如 `v1.8.0`）。手动运行会检出该 tag 的代码，并执行相同的版本检查、双架构构建和发布流程。
+如果 tag 推送后没有出现运行记录，可在 Actions ›「构建与发布 iTimer」› Run workflow 中选择 `main`，填入已有的版本 tag（如 `v1.8.0`）。手动运行会检出该 tag 的代码，并执行相同的版本检查、双架构构建和发布流程。
 
 ## 更多文档
 
