@@ -135,6 +135,8 @@ git push origin v1.8.1
 
 流水线使用 GitHub 自带的 `GITHUB_TOKEN`，发布 job 有 `contents: write` 权限，无需配置额外 Secret。上传附件时先创建草稿，全部上传成功再公开；失败后可在 Actions 中重新运行，继续上传草稿中的附件。已公开的 Release 不会被覆盖。
 
+如果 tag 推送后没有出现运行记录，可在 Actions ›「发布 iTimer」› Run workflow 中选择 `main`，填入已有的版本 tag（如 `v1.8.0`）。手动运行会检出该 tag 的代码，并执行相同的版本检查、双架构构建和发布流程。
+
 ## 更多文档
 
 - [功能清单](docs/FEATURES.md)：现有功能一览，标明每项从哪个版本开始有
