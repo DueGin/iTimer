@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.9.0] - 2026-10-10
+
+### 新增
+
+- 已完成记录可以手动修改每段计时的开始、结束日期和时间，修正忘记结束造成的多计时；保存后更新完成日期、时长统计和已同步的日历事件。
+
 ## [1.8.2] - 2026-10-09
 
 ### 修复
@@ -144,7 +150,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.8.2...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/DueGin/iTimer/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/DueGin/iTimer/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/DueGin/iTimer/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/DueGin/iTimer/compare/v1.7.0...v1.8.0

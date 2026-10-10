@@ -427,6 +427,39 @@ public final class TaskStore {
         return true
     }
 
+    /// Correct actual timing after completion. The task remains completed;
+    /// this is not another completion and must not advance its workflow.
+    /// An editor supplies its original segments to avoid overwriting changes
+    /// made in another window while its draft was open.
+    @discardableResult
+    public func updateCompletedSegments(
+        id: UUID,
+        segments: [TimeSegment],
+        expectedSegments: [TimeSegment]? = nil,
+        at now: Date? = nil
+    ) -> Bool {
+        let stamp = now ?? Date()
+        guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].isCompleted,
+              segments.count == tasks[index].segments.count,
+              expectedSegments.map({ $0 == tasks[index].segments }) ?? true,
+              RecordTimeValidation.error(for: segments, asOf: stamp) == nil else { return false }
+        guard segments != tasks[index].segments else { return true }
+        let original = tasks[index]
+        let previousNow = self.now
+        tasks[index].segments = segments
+        tasks[index].completedAt = segments.last?.endedAt
+        self.now = stamp
+        save()
+        guard lastError == nil else {
+            tasks[index] = original
+            self.now = previousNow
+            reconcileReminders()
+            return false
+        }
+        syncTask(id: id)
+        return true
+    }
+
     /// Single-core mode: keep only this task running. Pauses every other
     /// running task and resumes this one if it was paused.
     @discardableResult

@@ -18,6 +18,7 @@ enum SelfTest {
             switch launch.scenario {
             case "workflow": passed = await exerciseWorkflow()
             case "goal": passed = await exerciseGoal()
+            case "record": passed = await exerciseRecordTimes()
             default: passed = await exercise()
             }
             note(passed ? "PASS" : "FAIL")
@@ -714,6 +715,119 @@ enum SelfTest {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
+    }
+}
+
+// MARK: - Completed record editor
+
+extension SelfTest {
+    /// Real entry points, native date fields and button actions. Window
+    /// events also work in background mode, without moving the user's mouse.
+    static func exerciseRecordTimes() async -> Bool {
+        let store = TaskStore.shared
+        let end = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down) - 60)
+        let start = end.addingTimeInterval(-7200)
+        guard let task = store.addTask(title: "忘记结束的记录 #自检", at: start) else { return false }
+        store.pause(id: task.id, at: start.addingTimeInterval(1200))
+        store.resume(id: task.id, at: start.addingTimeInterval(1800))
+        store.complete(id: task.id, at: end)
+        let original = store.tasks.first { $0.id == task.id }!
+        let file = try? Data(contentsOf: store.url)
+
+        NSApp.windows.filter { $0.identifier?.rawValue.hasPrefix("main") == true }.forEach { $0.orderOut(nil) }
+        let window = NSWindow(contentRect: NSRect(x: 160, y: 160, width: 420, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "iTimer 记录时间自检"
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = NSHostingView(rootView: MenuBarView(store: store, embedded: true, filter: .doneToday).background(Theme.canvas))
+        await activateUnlessBackground()
+        bringForward(window)
+        defer { window.orderOut(nil) }
+
+        func changeDate(from old: Date, to new: Date, in view: NSView?) -> Bool {
+            guard let picker = collect(NSDatePicker.self, in: view).first(where: { abs($0.dateValue.timeIntervalSince(old)) < 1 }),
+                  let action = picker.action else { note("native date field missing"); return false }
+            picker.dateValue = new
+            return NSApp.sendAction(action, to: picker.target, from: picker)
+        }
+        func saveButton(in view: NSView?) -> NSButton? {
+            collect(NSButton.self, in: view).first
+        }
+        // The fixed test window puts the first completed row below the hero.
+        let editPoint = NSPoint(x: 352, y: 386)
+        try? await Task.sleep(for: .milliseconds(500))
+        await click(in: window, at: editPoint)
+        guard await wait(for: 3, label: "inline date fields", until: {
+            collect(NSDatePicker.self, in: window.contentView).count == 4
+        }) else {
+            snapshot(window, to: "/tmp/itimer-record-time-failure.png")
+            return false
+        }
+        snapshot(window, to: "/tmp/itimer-record-time-inline.png")
+        window.appearance = NSAppearance(named: .darkAqua)
+        try? await Task.sleep(for: .milliseconds(100))
+        snapshot(window, to: "/tmp/itimer-record-time-inline-dark.png")
+        window.appearance = NSAppearance(named: .aqua)
+        guard changeDate(from: end, to: start.addingTimeInterval(-60), in: window.contentView),
+              await wait(for: 3, label: "invalid time disables Save", until: {
+                  saveButton(in: window.contentView)?.isEnabled == false
+              }),
+              store.tasks.first(where: { $0.id == task.id }) == original else { return false }
+        await click(in: window, at: NSPoint(x: 388, y: 584))
+        guard await wait(for: 3, label: "cancel", until: { collect(NSDatePicker.self, in: window.contentView).isEmpty }),
+              store.tasks.first(where: { $0.id == task.id }) == original,
+              (try? Data(contentsOf: store.url)) == file else {
+            note("cancel changed the record")
+            return false
+        }
+        note("completed row opens all segments; invalid time disables Save; Cancel keeps original data")
+
+        let correctedEnd = start.addingTimeInterval(3600)
+        await click(in: window, at: editPoint)
+        guard await wait(for: 3, label: "reopened editor", until: { collect(NSDatePicker.self, in: window.contentView).count == 4 }),
+              changeDate(from: end, to: correctedEnd, in: window.contentView),
+              await wait(for: 3, label: "valid Save", until: { saveButton(in: window.contentView)?.isEnabled == true }),
+              let save = saveButton(in: window.contentView) else { return false }
+        save.performClick(nil)
+        guard await wait(for: 3, label: "saved timing", until: {
+            collect(NSDatePicker.self, in: window.contentView).isEmpty && store.tasks.first { $0.id == task.id }?.segments.last?.endedAt == correctedEnd
+        }), let edited = store.tasks.first(where: { $0.id == task.id }),
+              edited.segments.first == original.segments.first,
+              edited.duration(asOf: Date()) == 3000,
+              TaskStore(url: store.url).tasks == store.tasks else {
+            note("corrected timing did not persist or lost the pause")
+            return false
+        }
+        note("native end field saved correction; pause and first segment retained; reload matches")
+
+        window.contentView = NSHostingView(rootView: AnalysisView(store: store, range: .all))
+        window.setContentSize(NSSize(width: 1100, height: 760))
+        try? await Task.sleep(for: .milliseconds(500))
+        guard let scrollView = collect(NSScrollView.self, in: window.contentView).first,
+              let document = scrollView.documentView else { note("analysis scroll view missing"); return false }
+        let bottom = document.isFlipped ? max(0, document.bounds.height - scrollView.contentView.bounds.height) : 0
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try? await Task.sleep(for: .milliseconds(200))
+        snapshot(window, to: "/tmp/itimer-record-time-analysis.png")
+        // The one record sits above the rules at the bottom of this fixed window.
+        await click(in: window, at: NSPoint(x: 1018, y: 98))
+        guard await wait(for: 3, label: "analysis sheet", until: {
+            window.sheets.first.map { collect(NSDatePicker.self, in: $0.contentView).count == 4 } ?? false
+        }), let sheet = window.sheets.first else { return false }
+        snapshot(sheet, to: "/tmp/itimer-record-time-sheet.png")
+        let shiftedStart = start.addingTimeInterval(60)
+        guard changeDate(from: start, to: shiftedStart, in: sheet.contentView),
+              let save = saveButton(in: sheet.contentView) else { return false }
+        save.performClick(nil)
+        guard await wait(for: 3, label: "sheet saved", until: {
+            window.sheets.isEmpty && store.tasks.first { $0.id == task.id }?.segments.first?.startedAt == shiftedStart
+        }), store.report(range: .all).tasks.first(where: { $0.id == task.id })?.duration == 2940 else {
+            note("analysis sheet did not update the start or report")
+            return false
+        }
+        note("analysis record opens a sheet; native start field saves and analysis recalculates")
+        return true
     }
 }
 

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct AnalysisView: View {
     var store: TaskStore
     @State private var range: AnalysisRange
+    @State private var recordToEdit: TaskItem?
 
     init(store: TaskStore, range: AnalysisRange = .today) {
         self.store = store
@@ -44,7 +45,9 @@ struct AnalysisView: View {
                         TagChartCard(slices: digest.tags)
                         OverlapCard(overlaps: report.overlaps)
                     }
-                    RecordsCard(tasks: report.tasks, store: store)
+                    RecordsCard(tasks: report.tasks, store: store) { taskID in
+                        recordToEdit = store.tasks.first { $0.id == taskID && $0.isCompleted }
+                    }
                 }
                 rules
             }
@@ -55,6 +58,14 @@ struct AnalysisView: View {
         .background(Theme.canvas)
         .animation(.easeInOut(duration: 0.25), value: range)
         .accessibilityIdentifier("analysis-window")
+        .sheet(item: $recordToEdit) { task in
+            ScrollView {
+                RecordTimeEditor(task: task, store: store, now: max(Date(), store.now)) { recordToEdit = nil }
+                    .padding(20)
+            }
+            .frame(width: 420, height: 460)
+            .background(Theme.canvas)
+        }
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("范围", selection: $range) {
@@ -363,16 +374,17 @@ struct DeltaBadge: View {
 struct RecordsCard: View {
     var tasks: [TaskStat]
     var store: TaskStore
+    var onEditTime: (UUID) -> Void
     @State private var showAll = false
     private let collapsedCount = 8
 
     var body: some View {
         let longest = tasks.first?.duration ?? 1
         let visible = showAll ? tasks : Array(tasks.prefix(collapsedCount))
-        ChartCard(title: "记录", caption: "这个范围内每个任务计入的时间。右键可删除。", trailing: "\(tasks.count) 条") {
+        ChartCard(title: "记录", caption: "这个范围内每个任务计入的时间。已完成的可修改计时时间，右键可删除。", trailing: "\(tasks.count) 条") {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(visible) { task in
-                    RecordRow(task: task, longest: longest, store: store)
+                    RecordRow(task: task, longest: longest, store: store, onEditTime: { onEditTime(task.id) })
                     if task.id != visible.last?.id {
                         Divider().opacity(0.4)
                     }
@@ -399,6 +411,7 @@ private struct RecordRow: View {
     var task: TaskStat
     var longest: TimeInterval
     var store: TaskStore
+    var onEditTime: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -444,6 +457,10 @@ private struct RecordRow: View {
             withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
         }
         .contextMenu {
+            if task.isCompleted {
+                Button("修改计时时间…", action: onEditTime)
+                Divider()
+            }
             Button("删除", role: .destructive) { store.delete(id: task.id) }
         }
     }
@@ -463,6 +480,8 @@ private struct RecordRow: View {
         } else if task.isPaused {
             Button("继续") { store.resume(id: task.id) }
                 .buttonStyle(PillButtonStyle(tint: Theme.mild))
+        } else if task.isCompleted {
+            IconButton(title: "修改计时时间", systemImage: "pencil", identifier: "edit-record-time-\(task.id.uuidString)", action: onEditTime)
         } else {
             Color.clear.frame(height: 1)
         }

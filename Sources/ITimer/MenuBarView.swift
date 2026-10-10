@@ -16,6 +16,8 @@ struct MenuBarView: View {
     @State private var composer: ScheduleDraft?
     /// Task whose note and comments fill the panel, like the composer.
     @State private var journalID: UUID?
+    /// Completed timing draft, kept stable while the observable clock ticks.
+    @State private var recordToEdit: TaskItem?
     /// Brain buddy's speech; replaces the verdict line for a few seconds.
     @State private var quip: String?
     @State private var quipCount = 0
@@ -105,6 +107,7 @@ struct MenuBarView: View {
             // Reopening the panel should show the list, not a stale form.
             guard !embedded else { return }
             composer = nil
+            recordToEdit = nil
             // onDisappear rarely fires here, so release the latch now or the
             // next open keeps a stale height (e.g. after adding schedules).
             latchedHeight = nil
@@ -120,7 +123,15 @@ struct MenuBarView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            if let journalID, let task = store.tasks.first(where: { $0.id == journalID }) {
+            if let task = recordToEdit {
+                ScrollView {
+                    RecordTimeEditor(task: task, store: store, now: now) { recordToEdit = nil }
+                        .id(task.id)
+                        .padding(1)
+                }
+                .scrollIndicators(.never)
+                .frame(maxHeight: .infinity, alignment: .top)
+            } else if let journalID, let task = store.tasks.first(where: { $0.id == journalID }) {
                 ScrollView {
                     JournalView(task: task, store: store, now: now) { self.journalID = nil }
                         .padding(1)
@@ -422,7 +433,12 @@ struct MenuBarView: View {
                     if !done.isEmpty {
                         sectionTitle("今日完成", count: done.count)
                         ForEach(nestedEntries(done)) { entry in
-                            DoneRow(task: entry.task, store: store, onJournal: { openJournal(entry.task.id) })
+                            DoneRow(
+                                task: entry.task,
+                                store: store,
+                                onJournal: { openJournal(entry.task.id) },
+                                onEditTime: { openRecordEditor(entry.task) }
+                            )
                                 .draggable(entry.task.id.uuidString)
                                 .padding(.leading, entry.nested ? 18 : 0)
                         }
@@ -592,6 +608,7 @@ struct MenuBarView: View {
     private func beginSubtask(under parentID: UUID) {
         composer = nil
         journalID = nil
+        recordToEdit = nil
         editingID = nil
         subtaskDraft = ""
         subtaskParentID = parentID
@@ -846,6 +863,7 @@ struct MenuBarView: View {
     /// Whatever is typed in the quick field becomes the schedule's name.
     private func openComposer() {
         journalID = nil
+        recordToEdit = nil
         composer = .new(title: draft, asOf: store.now)
         draft = ""
         editingID = nil
@@ -853,8 +871,17 @@ struct MenuBarView: View {
 
     private func openJournal(_ id: UUID) {
         composer = nil
+        recordToEdit = nil
         editingID = nil
         journalID = id
+    }
+
+    private func openRecordEditor(_ task: TaskItem) {
+        composer = nil
+        journalID = nil
+        editingID = nil
+        endSubtask()
+        recordToEdit = task
     }
 
     private var composerBinding: Binding<ScheduleDraft> {
@@ -1323,6 +1350,7 @@ struct DoneRow: View {
     var task: TaskItem
     var store: TaskStore
     var onJournal: () -> Void = {}
+    var onEditTime: () -> Void = {}
     @State private var hovering = false
 
     var body: some View {
@@ -1340,6 +1368,8 @@ struct DoneRow: View {
                 .font(.callout.weight(.medium).monospacedDigit())
                 .foregroundStyle(.secondary)
             IconButton(title: "备注和进展", systemImage: task.hasJournal ? "text.bubble.fill" : "text.bubble", tint: task.hasJournal ? Theme.focused : .primary, identifier: "journal-\(task.id.uuidString)", action: onJournal)
+            IconButton(title: "修改计时时间", systemImage: "pencil", identifier: "edit-record-time-\(task.id.uuidString)", action: onEditTime)
+                .disabled(task.segments.isEmpty)
             IconButton(title: "再来一段", systemImage: "arrow.counterclockwise", identifier: "again-\(task.id.uuidString)") {
                 store.resume(id: task.id)
             }
@@ -1359,6 +1389,8 @@ struct DoneRow: View {
         .contextMenu {
             Button("再来一段") { store.resume(id: task.id) }
             Button("备注和进展", action: onJournal)
+            Button("修改计时时间…", action: onEditTime)
+                .disabled(task.segments.isEmpty)
             Divider()
             LabelMenus(task: task, store: store, onEditLabels: nil, onAddSubtask: nil)
             Divider()
