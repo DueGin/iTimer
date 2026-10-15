@@ -15,7 +15,9 @@ struct WorkflowCard: View {
     /// Border while a line is dragged over this card: whether it can be wired.
     var linkHighlight: Color?
     var onSelect: () -> Void
-    var onAddNext: () -> Void
+    /// Adds the next step after this card; nil where that does not apply
+    /// (a milestone's expanded preview), and the menu entry stays out.
+    var onAddNext: (() -> Void)?
     @State private var hovering = false
     @State private var renaming = false
     @State private var draft = ""
@@ -241,7 +243,9 @@ struct WorkflowCard: View {
             get: { node.autoStart },
             set: { store.setAutoStart(taskID: task.id, in: workflowID, $0) }
         ))
-        Button("添加下一步", action: onAddNext)
+        if let onAddNext {
+            Button("添加下一步", action: onAddNext)
+        }
         Divider()
         Button("改名", action: beginRename)
         Button("从工作流移除") { store.removeNode(taskID: task.id, from: workflowID) }

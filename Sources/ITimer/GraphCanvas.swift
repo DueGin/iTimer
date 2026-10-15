@@ -17,16 +17,38 @@ struct CanvasLink: Identifiable, Equatable {
     var id: String { edge.id }
 }
 
+/// A decoration drawn in canvas coordinates that moves with its card: the
+/// dashed frame around an expanded milestone.
+struct CanvasDecoration: Equatable {
+    /// The card it belongs to; nil = the canvas's own.
+    var owner: UUID?
+    var rect: CGRect
+    /// Where outside lines dock: entry on the left, exit on the right.
+    var inDock: CGPoint
+    var outDock: CGPoint
+}
+
 /// What a graph canvas shows and where its edits go. Reads are live, so
 /// right after an edit the canvas lays out against what is stored now.
 @MainActor
 protocol GraphCanvasModel {
+    associatedtype Overlay: View
     var nodes: [CanvasNode] { get }
     var links: [CanvasLink] { get }
     /// Where the canvas was left; nil = fit the cards when opened.
     var viewport: WorkflowViewport? { get }
     /// Whether ids dragged in from the task list can land here.
     var acceptsDrops: Bool { get }
+    /// Extra content pinned to the canvas (an expanded milestone's tasks).
+    /// `moved` carries each card's mid-drag offset so a group rides along;
+    /// `transform` maps canvas points to the screen so it pans and zooms
+    /// with the cards.
+    @ViewBuilder func overlay(moved: [UUID: CGSize], transform: CanvasTransform, clearSelection: @escaping () -> Void) -> Overlay
+    /// Frames and dock points in canvas coordinates, owned by a card.
+    func decorations(moved: [UUID: CGSize]) -> [CanvasDecoration]
+    /// The rectangle a card occupies for fitting and tidy-up: larger once
+    /// its group is open, so the layout leaves room for it.
+    func footprint(of id: UUID, card: CGSize) -> CGRect
     func canConnect(from: UUID, to: UUID) -> Bool
     func connect(from: UUID, to: UUID) -> Bool
     func disconnect(_ edge: WorkflowEdge)
@@ -37,8 +59,19 @@ protocol GraphCanvasModel {
     func remove(_ id: UUID)
     /// A card typed on the canvas, wired after `after`. Its id, or nil.
     func create(title: String, x: Double, y: Double, after: UUID?) -> UUID?
+    /// Lays the canvas out in columns.
     func arrange()
     func saveViewport(_ viewport: WorkflowViewport)
+}
+
+/// A canvas without expansions: the workflow canvas stays as it was.
+extension GraphCanvasModel {
+    func overlay(moved: [UUID: CGSize], transform: CanvasTransform, clearSelection: @escaping () -> Void) -> EmptyView { EmptyView() }
+    func decorations(moved: [UUID: CGSize]) -> [CanvasDecoration] { [] }
+    func footprint(of id: UUID, card: CGSize) -> CGRect {
+        guard let node = nodes.first(where: { $0.id == id }) else { return .zero }
+        return CGRect(x: node.x - card.width / 2, y: node.y - card.height / 2, width: card.width, height: card.height)
+    }
 }
 
 /// Words and accessibility ids that differ from one canvas to another.
@@ -97,6 +130,8 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
     @State private var composerDraft = ""
     @State private var picking = false
     @State private var dropTargeted = false
+    /// Each card's mid-drag offset, so a group rides along with its card.
+    @State private var groupDrags: [UUID: CGSize] = [:]
     /// Pointer position, kept out of the view state so moving the mouse
     /// does not redraw the canvas; read when a menu or tap needs it.
     @State private var pointer = PointerBox()
@@ -169,8 +204,19 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
                     .contextMenu { backgroundMenu(edges: edges, count: nodes.count) }
                 EdgeLayer(edges: edges + draftEdges(nodes), hovered: hoveredEdge, selected: selectedEdgeID)
                     .allowsHitTesting(false)
+                ForEach(model.decorations(moved: groupDrags), id: \.owner) { decoration in
+                    decorationFrame(decoration)
+                }
+                model.overlay(moved: groupDrags, transform: transform, clearSelection: { selection = nil })
+                    .zIndex(0.5)
                 ForEach(nodes) { node in
                     cardView(node)
+                    if model.decorations(moved: groupDrags).contains(where: { $0.owner == node.id }) {
+                        outputPort(node)
+                            .scaleEffect(transform.scale)
+                            .position(transform.screen(outPort(of: node)))
+                            .zIndex(3)
+                    }
                 }
                 if case .edge(let edge) = selection, let geometry = edges.first(where: { $0.edge == edge }) {
                     edgeRemover(edge, at: geometry.midpoint)
@@ -198,6 +244,9 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
             .onChange(of: proxy.size) { _, new in
                 size = new
                 if autoFit { fit(animated: false) }
+            }
+            .onChange(of: model.decorations(moved: [:]).compactMap(\.owner)) { _, _ in
+                fit(animated: true)
             }
         }
         .background(Theme.canvas)
@@ -273,15 +322,21 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
         return card(node, context)
             .gesture(cardDrag(node))
             .overlay(alignment: .trailing) {
-                OutputPort(selected: selection == .node(node.id), help: wording.portHelp, label: wording.portLabel) {
-                    openComposer(at: nextSlot(after: node), after: node.id)
+                if !model.decorations(moved: groupDrags).contains(where: { $0.owner == node.id }) {
+                    outputPort(node).offset(x: 7)
                 }
-                .offset(x: 7)
-                .highPriorityGesture(linkDrag(from: node))
             }
             .scaleEffect(transform.scale)
             .position(transform.screen(center(of: node)))
             .zIndex(drag?.id == node.id ? 2 : selection == .node(node.id) ? 1 : 0)
+    }
+
+    private func outputPort(_ node: CanvasNode) -> some View {
+        OutputPort(selected: selection == .node(node.id), help: wording.portHelp, label: wording.portLabel) {
+            openComposer(at: nextSlot(after: node), after: node.id)
+        }
+        .accessibilityIdentifier("\(wording.id)-port-\(node.id.uuidString)")
+        .highPriorityGesture(linkDrag(from: node))
     }
 
     private func center(of node: CanvasNode) -> CGPoint {
@@ -305,14 +360,14 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
         DragGesture(minimumDistance: 3, coordinateSpace: .named(space))
             .onChanged { value in
                 if drag == nil { select(.node(node.id)) }
-                drag = CardDrag(
-                    id: node.id,
-                    delta: CGSize(width: value.translation.width / transform.scale, height: value.translation.height / transform.scale)
-                )
+                let delta = CGSize(width: value.translation.width / transform.scale, height: value.translation.height / transform.scale)
+                drag = CardDrag(id: node.id, delta: delta)
+                groupDrags[node.id] = delta
             }
             .onEnded { value in
                 let x = Self.snapped(node.x + value.translation.width / transform.scale)
                 let y = Self.snapped(node.y + value.translation.height / transform.scale)
+                groupDrags[node.id] = nil
                 model.move(node.id, x: x, y: y)
                 drag = nil
             }
@@ -358,17 +413,46 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
 
     private func edgeGeometry(nodes: [CanvasNode], links: [CanvasLink]) -> [EdgeGeometry] {
         let byID = Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let docks = Dictionary(
+            model.decorations(moved: groupDrags).compactMap { decoration -> (UUID, CanvasDecoration)? in
+                decoration.owner.map { ($0, decoration) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         return links.compactMap { link in
             guard let from = byID[link.edge.from], let to = byID[link.edge.to] else { return nil }
+            // An expanded card hands its lines to the group's docks: entry
+            // on the frame's left, exit on its right.
+            let start = docks[link.edge.from].map { transform.screen($0.outDock) } ?? transform.screen(outPort(of: from))
+            let end = docks[link.edge.to].map { transform.screen($0.inDock) } ?? transform.screen(inPort(of: to))
             return EdgeGeometry(
                 id: link.id,
                 edge: link.edge,
-                start: transform.screen(outPort(of: from)),
-                end: transform.screen(inPort(of: to)),
+                start: start,
+                end: end,
                 scale: transform.scale,
                 style: link.met ? .met : .waiting
             )
         }
+    }
+
+    /// The dashed frame around an expanded milestone, drawn in canvas
+    /// coordinates so it pans, zooms and drags with the group.
+    private func decorationFrame(_ decoration: CanvasDecoration) -> some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .strokeBorder(
+                Color.primary.opacity(0.3),
+                style: StrokeStyle(lineWidth: 1.5, dash: [8, 6])
+            )
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            )
+            .frame(width: decoration.rect.width, height: decoration.rect.height)
+            .scaleEffect(transform.scale)
+            .position(transform.screen(CGPoint(x: decoration.rect.midX, y: decoration.rect.midY)))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     /// The line being dragged out of a port, and the one a pending new
@@ -388,6 +472,9 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
     }
 
     private func outPort(of node: CanvasNode) -> CGPoint {
+        if let decoration = model.decorations(moved: groupDrags).first(where: { $0.owner == node.id }) {
+            return decoration.outDock
+        }
         let center = center(of: node)
         return CGPoint(x: center.x + layout.card.width / 2, y: center.y)
     }
@@ -546,18 +633,27 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
 
     /// One column right of `node`, moved down past any card already there.
     private func nextSlot(after node: CanvasNode) -> CGPoint {
-        freeSlot(near: CGPoint(x: node.x + layout.column, y: node.y))
+        let exit = outPort(of: node)
+        return freeSlot(near: CGPoint(x: exit.x + layout.column - layout.card.width / 2, y: exit.y))
     }
 
     private func freeSlot(near point: CGPoint) -> CGPoint {
-        let nodes = model.nodes
         var slot = point
-        while nodes.contains(where: {
-            abs($0.x - slot.x) < layout.card.width && abs($0.y - slot.y) < layout.card.height + 12
-        }) {
+        while model.nodes.contains(where: { taken($0, near: slot) }) {
             slot.y += layout.row
         }
         return slot
+    }
+
+    /// Whether a card at `slot` would sit on `node`, counting the whole
+    /// block once the card is expanded.
+    private func taken(_ node: CanvasNode, near slot: CGPoint) -> Bool {
+        let footprint = model.footprint(of: node.id, card: layout.card)
+        if footprint == .zero {
+            return abs(node.x - slot.x) < layout.card.width && abs(node.y - slot.y) < layout.card.height + 12
+        }
+        let probe = CGRect(x: slot.x - layout.card.width / 2, y: slot.y - layout.card.height / 2, width: layout.card.width, height: layout.card.height)
+        return footprint.insetBy(dx: -6, dy: -6).intersects(probe)
     }
 
     private var viewCenter: CGPoint {
@@ -625,7 +721,7 @@ struct GraphCanvas<Model: GraphCanvasModel, Card: View, Header: View, Summary: V
     }
 
     private func fit(animated: Bool) {
-        let rects = model.nodes.map(cardRect)
+        let rects = model.nodes.map { model.footprint(of: $0.id, card: layout.card) }.filter { $0 != .zero }
         let target: CanvasTransform
         if let first = rects.first {
             target = .fitting(rects.dropFirst().reduce(first) { $0.union($1) }, in: size)

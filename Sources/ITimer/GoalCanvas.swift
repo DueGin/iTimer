@@ -15,8 +15,9 @@ struct GoalCanvasView: View {
         if let goal = store.goal(id: goalID) {
             let workflows = store.workflowsByID
             let summaries = store.milestoneSummaries(in: goalID)
+            let model = GoalCanvasModel(store: store, goalID: goalID)
             GraphCanvas(
-                model: GoalCanvasModel(store: store, goalID: goalID),
+                model: model,
                 layout: .goal,
                 wording: .goal
             ) { node, context in
@@ -30,7 +31,9 @@ struct GoalCanvasView: View {
                         linkHighlight: context.linkHighlight,
                         onSelect: context.select,
                         onAddNext: context.addNext,
-                        onOpen: { open(node.id) }
+                        onOpen: { open(node.id) },
+                        expanded: model.isExpanded(node.id),
+                        onToggleExpanded: { model.setExpanded(node.id, !model.isExpanded(node.id)) }
                     )
                 }
             } header: {
@@ -108,18 +111,30 @@ struct GoalCanvasView: View {
 }
 
 /// A goal as seen by the graph canvas: its milestones and their order.
+/// Expanded milestones show their workflow's tasks in a dashed frame next
+/// to the card; the layout is derived, never stored, so expanding never
+/// touches the real dependencies or task coordinates.
 @MainActor
 struct GoalCanvasModel: GraphCanvasModel {
     var store: TaskStore
     var goalID: UUID
-
     private var goal: Goal? { store.goal(id: goalID) }
+
+    private var placements: [UUID: CGPoint] {
+        guard let goal else { return [:] }
+        return MilestoneExpansionLayout.placements(
+            in: goal, workflows: store.workflowsByID,
+            card: CanvasLayout.goal.card, innerCard: Self.innerCard,
+            kept: { store.tasksByID[$0] != nil }
+        )
+    }
 
     var nodes: [CanvasNode] {
         let workflows = store.workflowsByID
+        let at = placements
         return (goal?.nodes ?? [])
             .filter { workflows[$0.workflowID] != nil }
-            .map { CanvasNode(id: $0.workflowID, x: $0.x, y: $0.y) }
+            .map { CanvasNode(id: $0.workflowID, x: Double(at[$0.workflowID]?.x ?? CGFloat($0.x)), y: Double(at[$0.workflowID]?.y ?? CGFloat($0.y))) }
     }
 
     var links: [CanvasLink] {
@@ -130,6 +145,75 @@ struct GoalCanvasModel: GraphCanvasModel {
     var viewport: WorkflowViewport? { goal?.viewport }
     /// The task list drags tasks; milestones come from the picker instead.
     var acceptsDrops: Bool { false }
+
+    func isExpanded(_ id: UUID) -> Bool {
+        goal?.node(id)?.expanded ?? false
+    }
+
+    func setExpanded(_ id: UUID, _ expanded: Bool) {
+        store.setMilestoneExpanded(workflowID: id, in: goalID, expanded)
+    }
+
+    private static let innerCard = CanvasMetrics.card
+
+    /// The derived layout of an expanded milestone at `anchor`, shifted
+    /// mid-drag.
+    private func expansion(of id: UUID, anchor: CGPoint, moved: [UUID: CGSize]) -> MilestoneExpansionLayout? {
+        guard goal?.node(id)?.expanded == true,
+              let workflow = store.workflow(id: id) else { return nil }
+        let layout = MilestoneExpansionLayout(
+            workflow: workflow,
+            anchor: anchor,
+            card: CanvasLayout.goal.card,
+            innerCard: Self.innerCard,
+            kept: { store.tasksByID[$0] != nil }
+        )
+        guard let shift = moved[id], shift != .zero else { return layout }
+        return MilestoneExpansionLayout(
+            anchor: CGPoint(x: layout.anchor.x + shift.width, y: layout.anchor.y + shift.height),
+            items: layout.items.map {
+                MilestoneExpansionLayout.Item(
+                    taskID: $0.taskID,
+                    position: CGPoint(x: $0.position.x + shift.width, y: $0.position.y + shift.height),
+                    depth: $0.depth,
+                    root: $0.root,
+                    leaf: $0.leaf
+                )
+            },
+            links: layout.links,
+            frame: layout.frame.offsetBy(dx: shift.width, dy: shift.height),
+            inDock: CGPoint(x: layout.inDock.x + shift.width, y: layout.inDock.y + shift.height),
+            outDock: CGPoint(x: layout.outDock.x + shift.width, y: layout.outDock.y + shift.height)
+        )
+    }
+
+    func overlay(moved: [UUID: CGSize], transform: CanvasTransform, clearSelection: @escaping () -> Void) -> some View {
+        let at = placements
+        let expansions = nodes.compactMap { node -> (UUID, MilestoneExpansionLayout)? in
+            let anchor = at[node.id] ?? CGPoint(x: node.x, y: node.y)
+            return expansion(of: node.id, anchor: anchor, moved: moved).map { (node.id, $0) }
+        }
+        return ForEach(expansions, id: \.0) { id, layout in
+            MilestoneExpansionView(store: store, workflowID: id, layout: layout, transform: transform, clearSelection: clearSelection)
+        }
+    }
+
+    func decorations(moved: [UUID: CGSize]) -> [CanvasDecoration] {
+        let at = placements
+        return nodes.compactMap { node in
+            let anchor = at[node.id] ?? CGPoint(x: node.x, y: node.y)
+            return expansion(of: node.id, anchor: anchor, moved: moved).map {
+                CanvasDecoration(owner: node.id, rect: $0.frame, inDock: $0.inDock, outDock: $0.outDock)
+            }
+        }
+    }
+
+    func footprint(of id: UUID, card: CGSize) -> CGRect {
+        guard let spot = placements[id] else { return .zero }
+        let cardRect = CGRect(x: spot.x - card.width / 2, y: spot.y - card.height / 2, width: card.width, height: card.height)
+        guard let layout = expansion(of: id, anchor: spot, moved: [:]) else { return cardRect }
+        return cardRect.union(layout.frame)
+    }
 
     func canConnect(from: UUID, to: UUID) -> Bool {
         goal?.canConnect(from: from, to: to) ?? false
@@ -144,7 +228,9 @@ struct GoalCanvasModel: GraphCanvasModel {
     }
 
     func move(_ id: UUID, x: Double, y: Double) {
-        store.moveMilestone(workflowID: id, in: goalID, x: x, y: y)
+        guard let shown = placements[id], let saved = goal?.node(id) else { return }
+        store.moveMilestone(workflowID: id, in: goalID,
+                            x: saved.x + x - shown.x, y: saved.y + y - shown.y)
     }
 
     func place(_ id: UUID, x: Double, y: Double) -> Bool {
@@ -309,5 +395,194 @@ struct GoalNoteEditor: View {
 
     private func commitName() {
         if !store.renameGoal(id: goal.id, to: name) { name = store.goal(id: goal.id)?.name ?? goal.name }
+    }
+}
+
+/// An expanded milestone on the roadmap: the workflow's real tasks in a
+/// dashed frame right of the card, wired by the workflow's own edges, plus
+/// the bridges that hand external lines to the inner roots and from the
+/// inner leaves. The cards are the same WorkflowCard the workflow canvas
+/// shows, so starting or pausing a task works right here; only dragging
+/// and rewiring stay on the workflow's own canvas.
+struct MilestoneExpansionView: View {
+    var store: TaskStore
+    var workflowID: UUID
+    var layout: MilestoneExpansionLayout
+    /// Canvas-to-screen, so the group pans and zooms with the cards.
+    var transform: CanvasTransform
+    var clearSelection: () -> Void
+
+    private var workflow: Workflow? { store.workflow(id: workflowID) }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            bridges
+            innerEdges
+            ForEach(layout.items) { item in
+                if let task = store.tasksByID[item.taskID], let node = workflow?.node(item.taskID) {
+                    WorkflowCard(
+                        task: task,
+                        node: node,
+                        state: workflow?.state(of: item.taskID, tasks: store.tasksByID) ?? .ready,
+                        blockers: workflow?.blockers(of: item.taskID, tasks: store.tasksByID).count ?? 0,
+                        store: store,
+                        workflowID: workflowID,
+                        selected: false,
+                        linkHighlight: nil,
+                        onSelect: clearSelection,
+                        onAddNext: nil
+                    )
+                    .simultaneousGesture(TapGesture().onEnded { clearSelection() })
+                    .scaleEffect(transform.scale)
+                    .position(transform.screen(item.position))
+                }
+            }
+            if layout.items.isEmpty {
+                emptyState
+            }
+            groupHeader
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("milestone-group-\(workflowID.uuidString)")
+    }
+
+    /// The lines that make the group part of the roadmap: the entry dock
+    /// to every root task, and every leaf task to the exit dock. A task
+    /// without edges is both, so it meets the outside on either side.
+    private var bridges: some View {
+        let milestoneDone = workflow?.achievedAt != nil
+        let entry = CGPoint(x: layout.anchor.x + CanvasLayout.goal.card.width / 2 + MilestoneExpansionLayout.followGap - MilestoneExpansionLayout.padding,
+                            y: layout.anchor.y)
+        var geometry = [EdgeGeometry(
+            id: "bridge-entry-\(workflowID.uuidString)",
+            start: transform.screen(layout.inDock),
+            end: transform.screen(CGPoint(x: layout.anchor.x - CanvasLayout.goal.card.width / 2, y: layout.anchor.y)),
+            scale: transform.scale,
+            style: milestoneDone ? .met : .waiting
+        )]
+        geometry.append(EdgeGeometry(
+            id: "bridge-card-\(workflowID.uuidString)",
+            start: transform.screen(CGPoint(x: layout.anchor.x + CanvasLayout.goal.card.width / 2, y: layout.anchor.y)),
+            end: transform.screen(entry), scale: transform.scale,
+            style: milestoneDone ? .met : .waiting
+        ))
+        if layout.items.isEmpty {
+            geometry.append(EdgeGeometry(
+                id: "bridge-empty-\(workflowID.uuidString)", start: transform.screen(entry),
+                end: transform.screen(layout.outDock), scale: transform.scale, style: .waiting,
+                via: [CGPoint(x: entry.x + 14, y: entry.y),
+                      CGPoint(x: entry.x + 14, y: layout.frame.maxY - 14),
+                      CGPoint(x: layout.outDock.x - 14, y: layout.frame.maxY - 14),
+                      CGPoint(x: layout.outDock.x - 14, y: layout.outDock.y)].map(transform.screen)
+            ))
+        }
+        for item in layout.items where item.root {
+            geometry.append(EdgeGeometry(
+                id: "bridge-in-\(workflowID.uuidString)-\(item.taskID.uuidString)",
+                edge: nil,
+                start: transform.screen(entry),
+                end: transform.screen(CGPoint(x: item.position.x - CanvasMetrics.card.width / 2, y: item.position.y)),
+                scale: transform.scale,
+                style: milestoneDone ? .met : .waiting
+            ))
+        }
+        for item in layout.items where item.leaf {
+            // A leaf in an earlier column (including an independent
+            // task) exits along the lower gutter, clear of later cards.
+            let early = item.depth < (layout.items.map(\.depth).max() ?? 0)
+            let rail = item.position.x + CanvasMetrics.card.width / 2 + 20
+            let bottom = layout.frame.maxY - 14
+            let exit = layout.outDock.x - 14
+            let bends = early ? [
+                CGPoint(x: rail, y: item.position.y), CGPoint(x: rail, y: bottom),
+                CGPoint(x: exit, y: bottom), CGPoint(x: exit, y: layout.outDock.y)
+            ].map(transform.screen) : []
+            geometry.append(EdgeGeometry(
+                id: "bridge-out-\(workflowID.uuidString)-\(item.taskID.uuidString)",
+                edge: nil,
+                start: transform.screen(CGPoint(x: item.position.x + CanvasMetrics.card.width / 2, y: item.position.y)),
+                end: transform.screen(layout.outDock),
+                scale: transform.scale,
+                style: store.tasksByID[item.taskID]?.isCompleted == true ? .met : .waiting,
+                via: bends
+            ))
+        }
+        return EdgeLayer(edges: geometry)
+            .allowsHitTesting(false)
+    }
+
+    /// The workflow's real edges, leaving a card's right side and arriving
+    /// at the next card's left side, as on the workflow canvas.
+    private var innerEdges: some View {
+        let byID = Dictionary(layout.items.map { ($0.taskID, $0) }, uniquingKeysWith: { first, _ in first })
+        let tasks = store.tasksByID
+        let geometry: [EdgeGeometry] = (workflow?.edges ?? []).compactMap { edge in
+            guard let from = byID[edge.from], let to = byID[edge.to] else { return nil }
+            let skip = to.depth > from.depth + 1
+            let startRail = from.position.x + CanvasMetrics.card.width / 2 + 20
+            let endRail = to.position.x - CanvasMetrics.card.width / 2 - 20
+            let bends = skip ? [
+                CGPoint(x: startRail, y: from.position.y), CGPoint(x: startRail, y: layout.frame.maxY - 14),
+                CGPoint(x: endRail, y: layout.frame.maxY - 14), CGPoint(x: endRail, y: to.position.y)
+            ].map(transform.screen) : []
+            return EdgeGeometry(
+                id: "inner-\(workflowID.uuidString)-\(edge.id)",
+                edge: nil,
+                start: transform.screen(CGPoint(x: from.position.x + CanvasMetrics.card.width / 2, y: from.position.y)),
+                end: transform.screen(CGPoint(x: to.position.x - CanvasMetrics.card.width / 2, y: to.position.y)),
+                scale: transform.scale,
+                style: tasks[edge.from]?.isCompleted == true ? .met : .waiting,
+                via: bends
+            )
+        }
+        return EdgeLayer(edges: geometry)
+            .allowsHitTesting(false)
+    }
+
+    /// An empty workflow still expands: the frame says there is nothing
+    /// inside yet, and points at the real canvas.
+    private var emptyState: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "tray")
+                .font(.system(size: 16))
+                .foregroundStyle(.tertiary)
+            Text("这个里程碑还没有任务")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("双击里程碑卡片进入工作流添加")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(width: 240, height: 120)
+        .scaleEffect(transform.scale)
+        .position(transform.screen(CGPoint(x: layout.anchor.x + CanvasLayout.goal.card.width / 2 + MilestoneExpansionLayout.followGap + 120, y: layout.anchor.y)))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("milestone-group-empty-\(workflowID.uuidString)")
+    }
+
+    private var groupHeader: some View {
+        let textScale = max(0.65, transform.scale)
+        return HStack(spacing: 8) {
+            Image(systemName: "flag")
+                .font(.system(size: 11 / textScale, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(workflow?.name ?? "里程碑")
+                .font(.system(size: 12 / textScale, weight: .semibold))
+                .lineLimit(1)
+                .help(workflow?.name ?? "里程碑")
+                .accessibilityIdentifier("milestone-group-title-\(workflowID.uuidString)")
+            Text("\(layout.items.count) 项任务")
+                .font(.system(size: 10 / textScale))
+                .foregroundStyle(.secondary)
+            Spacer()
+            IconButton(title: "收起里程碑", systemImage: "rectangle.compress.vertical", identifier: "milestone-collapse-\(workflowID.uuidString)") {
+                if let goal = store.goal(containing: workflowID) {
+                    store.setMilestoneExpanded(workflowID: workflowID, in: goal.id, false)
+                }
+            }
+        }
+        .frame(width: layout.frame.width - 24, height: 24)
+        .scaleEffect(transform.scale)
+        .position(transform.screen(CGPoint(x: layout.frame.midX, y: layout.frame.minY + 16)))
     }
 }

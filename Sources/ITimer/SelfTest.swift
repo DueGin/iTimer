@@ -18,6 +18,8 @@ enum SelfTest {
             switch launch.scenario {
             case "workflow": passed = await exerciseWorkflow()
             case "goal": passed = await exerciseGoal()
+            case "goal-search": passed = await exerciseGoalSearch()
+            case "milestone": passed = await exerciseMilestoneExpansion()
             case "record": passed = await exerciseRecordTimes()
             default: passed = await exercise()
             }
@@ -945,6 +947,314 @@ extension SelfTest {
         return true
     }
 
+    /// Expands a branching workflow in its roadmap, operates a real task,
+    /// and folds it back without changing any saved dependency or position.
+    static func exerciseMilestoneExpansion() async -> Bool {
+        let store = TaskStore.shared
+        guard let goal = store.addGoal("发布一款有人用的产品"),
+              let upstream = store.addMilestone(title: "验证需求", in: goal.id, x: 0, y: 0),
+              let milestone = store.addMilestone(title: "打磨首个可交付版本", in: goal.id, x: 340, y: 0, after: upstream.id),
+              let downstream = store.addMilestone(title: "完成首批交付", in: goal.id, x: 680, y: 0, after: milestone.id),
+              let research = store.addWorkflowStep(title: "确认交付范围", in: milestone.id, x: 0, y: 0),
+              let design = store.addWorkflowStep(title: "完善交互与界面", in: milestone.id, x: 280, y: -80, after: research.id),
+              let build = store.addWorkflowStep(title: "实现核心流程", in: milestone.id, x: 280, y: 80, after: research.id),
+              let review = store.addWorkflowStep(title: "回归与验收", in: milestone.id, x: 560, y: 0, after: design.id),
+              let independent = store.addWorkflowStep(title: "准备交付说明", in: milestone.id, x: 0, y: 240) else {
+            note("expansion fixture could not be created")
+            return false
+        }
+        guard store.connect(from: build.id, to: review.id, in: milestone.id) else { return false }
+        guard let support = store.addMilestone(title: "同步准备支持材料", in: goal.id, x: 340, y: 160, after: upstream.id) else { return false }
+        store.setGoalNote(id: goal.id, "把交付前的准备、实现与验收放在同一张路线图上。")
+        store.setMilestoneCriteria(workflowID: milestone.id, "核心流程完整，交互清楚，验收通过")
+        store.setMilestoneTargetDate(workflowID: milestone.id, Date().addingTimeInterval(7 * 86400))
+        let tasks = [research, design, build, review, independent]
+        let savedNodes = store.workflow(id: milestone.id)?.nodes
+        let savedEdges = store.workflow(id: milestone.id)?.edges
+        let goalEdges = store.goal(id: goal.id)?.edges
+        store.setGoalViewport(id: goal.id, WorkflowViewport(x: 180, y: 240, scale: 0.85))
+        UserDefaults.standard.set(MainDestination.goal(goal.id).raw, forKey: "mainDestination")
+        await activateUnlessBackground()
+        guard await wait(for: 5, label: "milestone roadmap", until: { canvasCatcher() != nil && find(identifier: "goal-title", depth: 16) != nil }),
+              let window = canvasCatcher()?.window else { return false }
+        bringForward(window)
+        NSApp.appearance = NSAppearance(named: .aqua)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView?.appearance = NSAppearance(named: .aqua)
+        try? await Task.sleep(for: .milliseconds(500))
+
+        func press(_ identifier: String) -> Bool {
+            guard let element = find(identifier: identifier, depth: 24) else {
+                note("missing expansion control: \(identifier)")
+                return false
+            }
+            return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+        let toggle = "milestone-expand-\(milestone.id.uuidString)"
+        let group = "milestone-group-\(milestone.id.uuidString)"
+        let expansionElements = [group,
+                                 "milestone-group-title-\(milestone.id.uuidString)",
+                                 "sidebar-workflow-\(milestone.id.uuidString)",
+                                 "sidebar-milestone-expanded-\(milestone.id.uuidString)"]
+            + tasks.map { "workflow-card-\($0.id.uuidString)" }
+        guard press(toggle),
+              await wait(for: 4, label: "expanded group and sidebar", until: {
+                  expansionElements.allSatisfy { find(identifier: $0, depth: 24) != nil }
+              }) else {
+            note("expanded milestone must appear by name in both sidebar and group, with all its task cards")
+            note("missing elements: \(expansionElements.filter { find(identifier: $0, depth: 24) == nil })")
+            snapshot(window, to: "/tmp/itimer-milestone-failure.png")
+            return false
+        }
+        guard store.workflow(id: milestone.id)?.nodes == savedNodes,
+              store.workflow(id: milestone.id)?.edges == savedEdges,
+              store.goal(id: goal.id)?.edges == goalEdges else {
+            note("expanding changed saved positions or dependencies")
+            return false
+        }
+        func blocksAreClear() -> Bool {
+            let model = GoalCanvasModel(store: store, goalID: goal.id)
+            let blocks = model.nodes.map { model.footprint(of: $0.id, card: CanvasLayout.goal.card) }
+            return blocks.enumerated().allSatisfy { index, block in
+                blocks.dropFirst(index + 1).allSatisfy { !block.intersects($0) }
+            }
+        }
+        guard blocksAreClear() else {
+            note("expanded workflow covers a neighboring milestone")
+            snapshot(window, to: "/tmp/itimer-milestone-failure.png")
+            return false
+        }
+        guard press("goal-arrange"), blocksAreClear() else {
+            note("auto arrangement overlaps an expanded group")
+            return false
+        }
+        guard press("goal-fit") else { return false }
+        try? await Task.sleep(for: .milliseconds(500))
+        snapshot(window, to: "/tmp/itimer-milestone-expanded.png")
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView?.appearance = NSAppearance(named: .darkAqua)
+        try? await Task.sleep(for: .milliseconds(350))
+        snapshot(window, to: "/tmp/itimer-milestone-expanded-dark.png")
+        NSApp.appearance = NSAppearance(named: .aqua)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView?.appearance = NSAppearance(named: .aqua)
+        try? await Task.sleep(for: .milliseconds(350))
+        let originalSize = window.contentView?.bounds.size ?? NSSize(width: 1380, height: 820)
+        window.setContentSize(NSSize(width: 1040, height: 600))
+        _ = press("goal-fit")
+        try? await Task.sleep(for: .milliseconds(500))
+        snapshot(window, to: "/tmp/itimer-milestone-expanded-compact.png")
+        window.setContentSize(originalSize)
+        _ = press("goal-fit")
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // The external handle must live at the group's exit, and opening
+        // its composer must leave every dependency intact on cancellation.
+        guard let port = find(identifier: "goal-port-\(milestone.id.uuidString)", depth: 24),
+              let portCenter = screenCenter(of: port),
+              let milestoneCard = find(identifier: "milestone-card-\(milestone.id.uuidString)", depth: 24),
+              let milestoneCenter = screenCenter(of: milestoneCard),
+              portCenter.x > milestoneCenter.x + 200 else {
+            note("expanded group's exit handle is missing or misplaced")
+            return false
+        }
+        await click(in: window, at: window.convertPoint(fromScreen: portCenter))
+        guard await wait(for: 2, label: "expanded exit composer", until: { find(identifier: "goal-step-field", depth: 24) != nil }) else {
+            note("expanded group's exit handle did not open a composer")
+            return false
+        }
+        await key(in: window, characters: "\u{1B}", code: 53)
+
+        // A pure task set and an empty workflow can coexist with the
+        // branching workflow; every complete block must remain separate.
+        guard let supportTask = store.addWorkflowStep(title: "整理常见问题", in: support.id, x: 0, y: 0),
+              store.addWorkflowStep(title: "准备支持渠道", in: support.id, x: 0, y: 0) != nil,
+              press("milestone-expand-\(support.id.uuidString)"),
+              press("milestone-expand-\(upstream.id.uuidString)"),
+              await wait(for: 3, label: "parallel and empty expansions", until: {
+                  find(identifier: "milestone-group-empty-\(upstream.id.uuidString)", depth: 24) != nil &&
+                  find(identifier: "workflow-card-\(supportTask.id.uuidString)", depth: 24) != nil
+              }), blocksAreClear() else {
+            note("multiple expanded workflows, task set or empty group failed")
+            return false
+        }
+        _ = press("goal-fit")
+        try? await Task.sleep(for: .milliseconds(400))
+        snapshot(window, to: "/tmp/itimer-milestone-multiple.png")
+        guard press("milestone-collapse-\(support.id.uuidString)"),
+              press("milestone-collapse-\(upstream.id.uuidString)") else { return false }
+        _ = press("goal-fit")
+        try? await Task.sleep(for: .milliseconds(400))
+
+        guard press("workflow-start-\(research.id.uuidString)"),
+              await wait(for: 2, label: "inline task started", until: { store.tasksByID[research.id]?.isRunning == true }),
+              press("workflow-pause-\(research.id.uuidString)"),
+              await wait(for: 2, label: "inline task paused", until: { store.tasksByID[research.id]?.isPaused == true }) else {
+            note("expanded task controls failed")
+            return false
+        }
+        let beforeMove = store.goal(id: goal.id)?.nodes.first { $0.id == milestone.id }
+        let beforeDisplay = GoalCanvasModel(store: store, goalID: goal.id).nodes.first { $0.id == milestone.id }
+        guard let cardElement = find(identifier: "milestone-card-\(milestone.id.uuidString)", depth: 24),
+              let cardCenter = screenCenter(of: cardElement) else { return false }
+        let from = window.convertPoint(fromScreen: cardCenter)
+        await drag(in: window, from: from, to: NSPoint(x: from.x + 48, y: from.y - 36))
+        guard await wait(for: 2, label: "expanded group moved", until: {
+            store.goal(id: goal.id)?.nodes.first { $0.id == milestone.id } != beforeMove
+        }) else {
+            note("dragging the expanded milestone did not move the group")
+            return false
+        }
+        guard let beforeDisplay,
+              let afterDisplay = GoalCanvasModel(store: store, goalID: goal.id).nodes.first(where: { $0.id == milestone.id }),
+              afterDisplay.x > beforeDisplay.x + 10, afterDisplay.x < beforeDisplay.x + 160,
+              afterDisplay.y > beforeDisplay.y + 10, afterDisplay.y < beforeDisplay.y + 160 else {
+            note("expanded group jumped away from the drag")
+            return false
+        }
+        guard press(toggle),
+              await wait(for: 3, label: "group folded", until: { find(identifier: group, depth: 24) == nil }),
+              store.workflow(id: milestone.id)?.nodes == savedNodes,
+              store.workflow(id: milestone.id)?.edges == savedEdges,
+              store.goal(id: goal.id)?.edges == goalEdges,
+              find(identifier: "milestone-card-\(downstream.id.uuidString)", depth: 24) != nil else {
+            note("folding changed the workflow or lost a downstream milestone")
+            return false
+        }
+        _ = press("goal-arrange")
+        _ = press("goal-fit")
+        try? await Task.sleep(for: .milliseconds(400))
+        snapshot(window, to: "/tmp/itimer-milestone-collapsed.png")
+        note("expanded branching and independent tasks, operated inline timer, folded without changing positions or dependencies")
+        return true
+    }
+
+    /// Filters the actual sidebar through its text field and opens a result,
+    /// preserving the canvas and the saved fold state across searches.
+    static func exerciseGoalSearch() async -> Bool {
+        let store = TaskStore.shared
+        guard let product = store.addGoal("发布 iTimer 2.0"),
+              let research = store.addMilestone(title: "验证需求", in: product.id, x: 0, y: 0),
+              let delivery = store.addMilestone(title: "完成首批交付", in: product.id, x: 340, y: 0, after: research.id),
+              let content = store.addGoal("建立稳定的内容节奏"),
+              let article = store.addMilestone(title: "发布首篇文章", in: content.id, x: 0, y: 0),
+              let topics = store.addMilestone(title: "整理选题", in: content.id, x: 340, y: 0),
+              let learning = store.addGoal("学习 Swift") else { return false }
+        let defaults = UserDefaults.standard
+        let folds = [product.id, content.id].map(\.uuidString).sorted().joined(separator: ",")
+        defaults.set(folds, forKey: "collapsedGoals")
+        defaults.set(false, forKey: "listPanelCollapsed")
+        defaults.set(MainDestination.goal(product.id).raw, forKey: "mainDestination")
+        await activateUnlessBackground()
+        guard await wait(for: 5, label: "search sidebar", until: {
+            find(identifier: "sidebar-goal-search", depth: 24) != nil && canvasCatcher() != nil
+        }), let window = canvasCatcher()?.window else { return false }
+        bringForward(window)
+        window.appearance = NSAppearance(named: .aqua)
+        try? await Task.sleep(for: .milliseconds(500))
+
+        func visibleGoal(_ id: UUID) -> Bool { find(identifier: "sidebar-goal-\(id.uuidString)", depth: 24) != nil }
+        func visibleMilestone(_ id: UUID) -> Bool { find(identifier: "sidebar-workflow-\(id.uuidString)", depth: 24) != nil }
+        func destination() -> String? { defaults.string(forKey: "mainDestination") }
+        func foldsUnchanged() -> Bool { defaults.string(forKey: "collapsedGoals") == folds }
+        func searchValue() -> String? {
+            find(identifier: "sidebar-goal-search", depth: 24).flatMap { string($0, kAXValueAttribute) }
+        }
+        func press(_ identifier: String) -> Bool {
+            guard let element = find(identifier: identifier, depth: 24) else { note("missing \(identifier)"); return false }
+            return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+        func search(_ query: String) async -> Bool {
+            guard let field = find(identifier: "sidebar-goal-search", depth: 24), let center = screenCenter(of: field) else { return false }
+            await click(in: window, at: window.convertPoint(fromScreen: center))
+            guard let editor = window.firstResponder as? NSTextView else { note("search field did not receive focus"); return false }
+            editor.insertText(query, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+            return await wait(for: 2, label: "query \(query)", until: { searchValue() == query })
+        }
+
+        guard visibleGoal(product.id), visibleGoal(content.id), !visibleMilestone(research.id),
+              await search("  itimer  "),
+              await wait(for: 2, label: "goal match", until: {
+                  visibleGoal(product.id) && visibleMilestone(research.id) && visibleMilestone(delivery.id)
+                      && !visibleGoal(content.id) && !visibleGoal(learning.id)
+              }), foldsUnchanged() else { note("goal-name search failed"); return false }
+        note("goal-name search ignores case and surrounding spaces, temporarily reveals all milestones")
+
+        guard await search("首"),
+              await wait(for: 2, label: "grouped matches", until: {
+                  visibleGoal(product.id) && visibleGoal(content.id)
+                      && visibleMilestone(delivery.id) && visibleMilestone(article.id)
+                      && !visibleMilestone(research.id) && !visibleMilestone(topics.id) && !visibleGoal(learning.id)
+              }), foldsUnchanged() else { note("milestone search lost its parent or included unmatched siblings"); return false }
+        snapshot(window, to: "/tmp/itimer-goal-search.png")
+        note("milestone-name search keeps each parent and only matching milestones across goals")
+
+        guard await search("文章"),
+              await wait(for: 2, label: "hidden selection retained", until: {
+                  !visibleGoal(product.id) && visibleGoal(content.id) && visibleMilestone(article.id)
+              }), destination() == MainDestination.goal(product.id).raw,
+              find(identifier: "goal-title", depth: 24) != nil else { note("filtering changed the open canvas"); return false }
+        try? await Task.sleep(for: .milliseconds(350))
+        guard var row = find(identifier: "sidebar-workflow-\(article.id.uuidString)", depth: 24) else { return false }
+        // Select via the native accessibility row: an inactive table can
+        // consume a mouse-down to activate even with direct delivery.
+        while string(row, kAXRoleAttribute) != kAXRowRole {
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(row, kAXParentAttribute as CFString, &parent) == .success,
+                  let parent else { note("search result has no accessibility row"); return false }
+            row = parent as! AXUIElement
+        }
+        guard AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success else {
+            note("could not select the search result row"); return false
+        }
+        guard await wait(for: 2, label: "open search result", until: {
+            destination() == MainDestination.workflow(article.id).raw && find(identifier: "back-to-roadmap", depth: 24) != nil
+        }) else {
+            note("result destination=\(destination() ?? "nil") expected=\(MainDestination.workflow(article.id).raw)")
+            snapshot(window, to: "/tmp/itimer-goal-search-click.png")
+            return false
+        }
+        guard foldsUnchanged(), press("sidebar-goal-search-clear"),
+              await wait(for: 2, label: "clear restores folds", until: {
+                  searchValue() == "" && visibleGoal(product.id) && visibleGoal(content.id) && visibleGoal(learning.id)
+                      && !visibleMilestone(article.id) && !visibleMilestone(delivery.id)
+              }), destination() == MainDestination.workflow(article.id).raw, foldsUnchanged() else {
+            note("opening or clearing a result changed saved folds or lost selection"); return false
+        }
+        note("a result opens its workflow; clear restores saved folds and retains the workflow canvas")
+
+        guard await search("Swift"),
+              await wait(for: 2, label: "empty goal match", until: {
+                  visibleGoal(learning.id) && !visibleGoal(product.id) && !visibleGoal(content.id)
+              }), await search("没有这个目标"),
+              await wait(for: 2, label: "no results", until: {
+                  find(identifier: "sidebar-goal-search-empty", depth: 24) != nil && !visibleGoal(learning.id)
+              }), destination() == MainDestination.workflow(article.id).raw else { return false }
+        snapshot(window, to: "/tmp/itimer-goal-search-empty.png")
+        await key(in: window, characters: "\u{1B}", code: 53)
+        guard await wait(for: 2, label: "escape clears", until: {
+            searchValue() == "" && visibleGoal(product.id) && visibleGoal(content.id)
+        }), foldsUnchanged(), await search("   "), visibleGoal(learning.id), !visibleMilestone(article.id) else { return false }
+        note("empty goals are searchable; no-result state and Escape work; whitespace does not filter")
+
+        guard await search("隐藏全部") else { return false }
+        MainRouter.shared.pendingRename = .goal(product.id)
+        guard await wait(for: 3, label: "rename clears filter", until: {
+            searchValue() == "" && editingField(named: product.name) != nil && visibleGoal(product.id)
+        }) else { return false }
+        await key(in: window, characters: "\r", code: 36)
+        guard await search("隐藏全部") else { return false }
+        let count = store.goals.count
+        guard press("sidebar-new-goal"),
+              await wait(for: 3, label: "new goal clears filter", until: {
+                  store.goals.count == count + 1 && searchValue() == "" && editingField(named: "新目标") != nil
+              }), let made = store.goals.last, visibleGoal(made.id),
+              destination() == MainDestination.goal(made.id).raw else { return false }
+        note("rename and new-goal actions clear filtering so their editable row stays visible")
+        return true
+    }
+
     /// Drives a goal's roadmap the way a person would: wire two milestones
     /// from a port, open one and come back, mark it reached, then use the
     /// 目标 menu with the main window closed.
@@ -1217,18 +1527,24 @@ extension SelfTest {
     /// Hands an event to its view directly. A window of an app that is not
     /// active is never key, and AppKit spends the first click on such a
     /// window bringing it forward; the background run skips that.
-    private static func deliver(_ event: NSEvent, in window: NSWindow, pressed: inout NSView?) {
+    @MainActor
+    private final class MouseDeliveryState {
+        var pressed: NSView?
+    }
+
+    private static func deliver(_ event: NSEvent, in window: NSWindow, state: MouseDeliveryState) {
         switch event.type {
         case .leftMouseDown:
             guard let frame = window.contentView?.superview,
-                  let view = frame.hitTest(frame.convert(event.locationInWindow, from: nil)) else { return }
-            pressed = view
-            view.mouseDown(with: event)
+                  let hit = frame.hitTest(frame.convert(event.locationInWindow, from: nil)) else { return }
+            state.pressed = hit
+            hit.mouseDown(with: event)
         case .leftMouseDragged:
-            pressed?.mouseDragged(with: event)
+            state.pressed?.mouseDragged(with: event)
         case .leftMouseUp:
-            pressed?.mouseUp(with: event)
-            pressed = nil
+            let view = state.pressed
+            state.pressed = nil
+            view?.mouseUp(with: event)
         default:
             window.sendEvent(event)
         }
@@ -1269,13 +1585,15 @@ extension SelfTest {
     private static func play(_ events: [NSEvent], in window: NSWindow, gap: TimeInterval = 0.04) async {
         // The view that took the mouse-down gets the drags and the release,
         // as AppKit does.
-        nonisolated(unsafe) var pressed: NSView?
+        // Native text fields run a nested tracking loop in mouseDown. Keep
+        // the target in a reference so the release can reenter safely.
+        let state = MouseDeliveryState()
         for (index, event) in events.enumerated() {
             nonisolated(unsafe) let event = event
             RunLoop.main.add(Timer(timeInterval: gap * Double(index + 1), repeats: false) { _ in
                 MainActor.assumeIsolated {
                     guard background else { return window.sendEvent(event) }
-                    deliver(event, in: window, pressed: &pressed)
+                    deliver(event, in: window, state: state)
                 }
             }, forMode: .common)
         }

@@ -80,6 +80,8 @@ struct EdgeGeometry: Identifiable {
     var end: CGPoint
     var scale: CGFloat
     var style: Style
+    /// Optional bends for a group bridge routed around task cards.
+    var via: [CGPoint] = []
 
     private var arrowLength: CGFloat { 9 * scale }
     private var base: CGPoint { CGPoint(x: end.x - arrowLength, y: end.y) }
@@ -90,6 +92,11 @@ struct EdgeGeometry: Identifiable {
     }
 
     var curve: Path {
+        if !via.isEmpty {
+            var path = Path()
+            path.addLines([start] + via + [base])
+            return path
+        }
         let (first, second) = controls
         var path = Path()
         path.move(to: start)
@@ -108,6 +115,20 @@ struct EdgeGeometry: Identifiable {
     }
 
     func point(at t: CGFloat) -> CGPoint {
+        if !via.isEmpty {
+            let points = [start] + via + [base]
+            let lengths = zip(points, points.dropFirst()).map { hypot($1.x - $0.x, $1.y - $0.y) }
+            var remaining = lengths.reduce(0, +) * t
+            for (index, length) in lengths.enumerated() {
+                if remaining <= length, length > 0 {
+                    let fraction = remaining / length
+                    return CGPoint(x: points[index].x + (points[index + 1].x - points[index].x) * fraction,
+                                   y: points[index].y + (points[index + 1].y - points[index].y) * fraction)
+                }
+                remaining -= length
+            }
+            return base
+        }
         let (first, second) = controls
         let u = 1 - t
         let a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t
@@ -235,8 +256,10 @@ struct OutputPort: View {
         }
         .onTapGesture(perform: onTap)
         .help(help)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onTap() }
     }
 }
 

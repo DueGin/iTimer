@@ -6,17 +6,21 @@ public struct GoalNode: Codable, Equatable, Identifiable, Sendable, GraphNode {
     public var workflowID: UUID
     public var x: Double
     public var y: Double
+    /// On the roadmap its tasks are laid out beside the card, inside a
+    /// dashed frame. Their own canvas coordinates never change for it.
+    public var expanded: Bool
 
     public var id: UUID { workflowID }
 
-    public init(workflowID: UUID, x: Double, y: Double) {
+    public init(workflowID: UUID, x: Double, y: Double, expanded: Bool = false) {
         self.workflowID = workflowID
         self.x = x
         self.y = y
+        self.expanded = expanded
     }
 
     private enum CodingKeys: String, CodingKey {
-        case workflowID, x, y
+        case workflowID, x, y, expanded
     }
 
     public init(from decoder: Decoder) throws {
@@ -24,6 +28,7 @@ public struct GoalNode: Codable, Equatable, Identifiable, Sendable, GraphNode {
         workflowID = try container.decode(UUID.self, forKey: .workflowID)
         x = try container.decodeIfPresent(Double.self, forKey: .x) ?? 0
         y = try container.decodeIfPresent(Double.self, forKey: .y) ?? 0
+        expanded = try container.decodeIfPresent(Bool.self, forKey: .expanded) ?? false
     }
 }
 

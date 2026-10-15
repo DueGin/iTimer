@@ -947,6 +947,18 @@ public final class TaskStore {
         return true
     }
 
+    /// Opens or closes a milestone's tasks beside its card. Only the flag
+    /// is stored; the tasks' own canvas never changes for it.
+    @discardableResult
+    public func setMilestoneExpanded(workflowID: UUID, in goalID: UUID, _ expanded: Bool) -> Bool {
+        guard let index = goals.firstIndex(where: { $0.id == goalID }),
+              let node = goals[index].nodes.firstIndex(where: { $0.workflowID == workflowID }) else { return false }
+        guard goals[index].nodes[node].expanded != expanded else { return true }
+        goals[index].nodes[node].expanded = expanded
+        save()
+        return true
+    }
+
     /// Takes a milestone off the roadmap, with its lines. The workflow stays.
     @discardableResult
     public func removeMilestone(workflowID: UUID, from goalID: UUID) -> Bool {
