@@ -15,7 +15,9 @@ final class NudgeCenter {
     private var longRunNudged: Set<String> = []
 
     func start() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // The system calls back on its own queue. This no-op must not
+        // inherit MainActor isolation when built with older SDKs.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { @Sendable _, _ in }
     }
 
     func observe(store: TaskStore) {

@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.10.1] - 2026-10-15
+
+### 修复
+
+- 修复部分系统在启动时因通知权限检查而意外退出的问题。
+
 ## [1.10.0] - 2026-10-15
 
 ### 新增
@@ -165,7 +171,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/DueGin/iTimer/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/DueGin/iTimer/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/DueGin/iTimer/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/DueGin/iTimer/compare/v1.8.1...v1.8.2
