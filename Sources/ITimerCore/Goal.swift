@@ -7,7 +7,9 @@ public struct GoalNode: Codable, Equatable, Identifiable, Sendable, GraphNode {
     public var x: Double
     public var y: Double
     /// On the roadmap its tasks are laid out beside the card, inside a
-    /// dashed frame. Their own canvas coordinates never change for it.
+    /// dashed frame. Expanding stores only this flag: the tasks' own canvas
+    /// coordinates change for nothing but an explicit "自动整理" (which
+    /// tidies a group that is open along with the roadmap across it).
     public var expanded: Bool
 
     public var id: UUID { workflowID }

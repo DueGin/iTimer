@@ -1010,10 +1010,17 @@ public final class TaskStore {
         return true
     }
 
-    /// Lays the roadmap out in columns by dependency depth.
+    /// Lays the roadmap out in columns by dependency depth, and the tasks
+    /// inside every expanded milestone along with it, so an open group
+    /// reads exactly like its workflow canvas after "自动整理". Milestones
+    /// that are folded stay as they are: their tasks are not on screen.
     public func arrangeGoal(id: UUID) {
         guard let index = goals.firstIndex(where: { $0.id == id }) else { return }
         goals[index].applyArrangement(columnGap: Goal.columnGap, rowGap: Goal.rowGap)
+        for node in goals[index].nodes where node.expanded {
+            guard let spot = workflows.firstIndex(where: { $0.id == node.workflowID }) else { continue }
+            workflows[spot].applyArrangement()
+        }
         save()
     }
 

@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.10.5] - 2026-10-16
+
+### 变更
+
+- 路线图的「自动整理」现在也会排开已经展开的里程碑里的任务，虚线框内和双击进工作流后点整理的效果一致；收起的里程碑不动。
+
 ## [1.10.4] - 2026-10-16
 
 ### 变更
@@ -189,7 +195,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.4...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.5...HEAD
+[1.10.5]: https://github.com/DueGin/iTimer/compare/v1.10.4...v1.10.5
 [1.10.4]: https://github.com/DueGin/iTimer/compare/v1.10.3...v1.10.4
 [1.10.3]: https://github.com/DueGin/iTimer/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/DueGin/iTimer/compare/v1.10.1...v1.10.2

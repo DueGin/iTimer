@@ -278,4 +278,36 @@ final class GoalTests: XCTestCase {
         XCTAssertEqual(x(ids[3]), 2 * Goal.columnGap)
         XCTAssertEqual(abs((arranged.node(ids[1])?.y ?? 0) - (arranged.node(ids[2])?.y ?? 0)), Goal.rowGap)
     }
+
+    /// The roadmap's tidy-up also lays out the tasks of an open milestone,
+    /// so the dashed frame matches the workflow canvas after its arrange;
+    /// a folded milestone's tasks are left alone.
+    @MainActor
+    func testArrangeGoalAlsoTidiesExpandedMilestoneTasks() throws {
+        let store = makeStore()
+        let (goal, ids) = try makeRoadmap(store, ["准备", "上线"])
+        let root = try XCTUnwrap(store.addWorkflowStep(title: "确认范围", in: ids[0], x: 0, y: 0, at: t0))
+        let design = try XCTUnwrap(store.addWorkflowStep(title: "定稿", in: ids[0], x: 900, y: 900, after: root.id, at: t0))
+        let build = try XCTUnwrap(store.addWorkflowStep(title: "实现", in: ids[0], x: 500, y: 1200, after: root.id, at: t0))
+        let loose = try XCTUnwrap(store.addWorkflowStep(title: "写说明", in: ids[1], x: 12, y: 34, at: t0))
+
+        store.arrangeGoal(id: goal.id)
+        let untouched = try XCTUnwrap(store.workflow(id: ids[1]))
+        XCTAssertEqual(untouched.node(loose.id)?.x, 12, "a folded milestone keeps its tasks as they are")
+
+        XCTAssertTrue(store.setMilestoneExpanded(workflowID: ids[0], in: goal.id, true))
+        store.arrangeGoal(id: goal.id)
+
+        let flow = try XCTUnwrap(store.workflow(id: ids[0]))
+        let expected = flow.pruned(keeping: [root.id, design.id, build.id])
+            .arranged(columnGap: 280, rowGap: 120)
+        XCTAssertEqual(flow.node(root.id)?.x ?? .nan, expected[root.id]?.x ?? .nan, accuracy: 0.001)
+        XCTAssertEqual(flow.node(design.id)?.y ?? .nan, expected[design.id]?.y ?? .nan, accuracy: 0.001)
+        XCTAssertEqual(flow.node(build.id)?.y ?? .nan, expected[build.id]?.y ?? .nan, accuracy: 0.001)
+        // The two branches share a column and a single-card column sits
+        // centered against them, not level with the first row.
+        XCTAssertEqual(flow.node(design.id)?.x ?? .nan, flow.node(build.id)?.x ?? .nan, accuracy: 0.001)
+        XCTAssertNotEqual(flow.node(root.id)?.y ?? 0, flow.node(design.id)?.y ?? 0, accuracy: 0.001)
+        XCTAssertTrue(store.workflow(id: ids[1]).map { $0.node(loose.id)?.x == 12 } ?? false)
+    }
 }

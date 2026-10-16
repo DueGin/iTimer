@@ -972,7 +972,7 @@ extension SelfTest {
         store.setMilestoneCriteria(workflowID: milestone.id, "核心流程完整，交互清楚，验收通过")
         store.setMilestoneTargetDate(workflowID: milestone.id, Date().addingTimeInterval(7 * 86400))
         let tasks = [research, design, build, review, independent]
-        let savedNodes = store.workflow(id: milestone.id)?.nodes
+        var savedNodes = store.workflow(id: milestone.id)?.nodes
         let savedEdges = store.workflow(id: milestone.id)?.edges
         let goalEdges = store.goal(id: goal.id)?.edges
         store.setGoalViewport(id: goal.id, WorkflowViewport(x: 180, y: 240, scale: 0.85))
@@ -1027,10 +1027,25 @@ extension SelfTest {
             snapshot(window, to: "/tmp/itimer-milestone-failure.png")
             return false
         }
+        let beforeArrange = store.workflow(id: milestone.id)?.nodes
         guard press("goal-arrange"), blocksAreClear() else {
             note("auto arrangement overlaps an expanded group")
             return false
         }
+        // The roadmap's tidy-up reaches inside an open group, so the frame
+        // ends up laid out like the workflow canvas after its own arrange.
+        guard let afterArrange = store.workflow(id: milestone.id)?.nodes,
+              afterArrange != beforeArrange else {
+            note("auto arrangement left the expanded tasks where they were")
+            return false
+        }
+        let columns = Set(afterArrange.map(\.x)).sorted()
+        let pitch = CanvasLayout.workflow.column
+        guard zip(columns, columns.dropFirst()).allSatisfy({ abs(($1 - $0) - pitch) < 0.001 }) else {
+            note("arranged tasks are not on the column grid: \(columns)")
+            return false
+        }
+        savedNodes = afterArrange
         guard press("goal-fit") else { return false }
         try? await Task.sleep(for: .milliseconds(500))
         snapshot(window, to: "/tmp/itimer-milestone-expanded.png")
