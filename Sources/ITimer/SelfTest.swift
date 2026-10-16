@@ -963,7 +963,10 @@ extension SelfTest {
             note("expansion fixture could not be created")
             return false
         }
-        guard store.connect(from: build.id, to: review.id, in: milestone.id) else { return false }
+        guard store.connect(from: build.id, to: review.id, in: milestone.id),
+              // A dependency that skips a column, so the run also covers a
+              // line that has to cross the column in between.
+              store.connect(from: research.id, to: review.id, in: milestone.id) else { return false }
         guard let support = store.addMilestone(title: "同步准备支持材料", in: goal.id, x: 340, y: 160, after: upstream.id) else { return false }
         store.setGoalNote(id: goal.id, "把交付前的准备、实现与验收放在同一张路线图上。")
         store.setMilestoneCriteria(workflowID: milestone.id, "核心流程完整，交互清楚，验收通过")

@@ -489,17 +489,20 @@ struct MilestoneExpansionView: View {
                 style: milestoneDone ? .met : .waiting
             ))
         }
-        // Exits share the lower gutter, so early leaves get a lane of their
-        // own and never run along the same line as a later card's exit.
+        // A task that finishes early still has to reach the exit on the
+        // right, so its line steps around the cards in between before
+        // leaving; one that ends in the last column leaves directly.
         var lanes: [CGFloat] = []
         for item in layout.items where item.leaf {
-            // A leaf in an earlier column (including an independent
-            // task) exits along the lower gutter, clear of later cards.
-            let early = item.depth < (layout.items.map(\.depth).max() ?? 0)
             let rail = item.position.x + CanvasMetrics.card.width / 2 + 20
             let exit = layout.outDock.x - 14
             let bends: [CGPoint]
-            if early {
+            if let channel = clearExitChannel(for: item) {
+                bends = [
+                    CGPoint(x: rail, y: item.position.y), CGPoint(x: rail, y: channel),
+                    CGPoint(x: exit, y: channel), CGPoint(x: exit, y: layout.outDock.y)
+                ]
+            } else if item.depth < (layout.items.map(\.depth).max() ?? 0) {
                 let gutter = nextGutter(&lanes)
                 bends = [
                     CGPoint(x: rail, y: item.position.y), CGPoint(x: rail, y: gutter),
@@ -566,12 +569,13 @@ struct MilestoneExpansionView: View {
             let endRail = to.position.x - CanvasMetrics.card.width / 2 - 20
             let bends: [CGPoint]
             if skip {
-                // A long edge goes under the cards in the columns it jumps,
-                // on a line of its own so two of them never overlap.
-                let gutter = nextGutter(&gutterLanes)
+                // A long edge crosses the columns it jumps through the
+                // lowest clear channel between them, so it stays a short
+                // detour; only a blocked column sends it to the gutter.
+                let channel = clearChannel(from: from, to: to) ?? nextGutter(&gutterLanes)
                 bends = [
-                    CGPoint(x: startRail, y: from.position.y), CGPoint(x: startRail, y: gutter),
-                    CGPoint(x: endRail, y: gutter), CGPoint(x: endRail, y: to.position.y)
+                    CGPoint(x: startRail, y: from.position.y), CGPoint(x: startRail, y: channel),
+                    CGPoint(x: endRail, y: channel), CGPoint(x: endRail, y: to.position.y)
                 ]
             } else {
                 bends = []
@@ -588,6 +592,55 @@ struct MilestoneExpansionView: View {
         }
         return EdgeLayer(edges: geometry)
             .allowsHitTesting(false)
+    }
+
+    /// A y for the horizontal run of a long edge to cross the columns it
+    /// jumps: the channel nearest the two cards that clears every card
+    /// between them. Nil when a card blocks every way through.
+    private func clearChannel(from: MilestoneExpansionLayout.Item, to: MilestoneExpansionLayout.Item) -> CGFloat? {
+        let half = CanvasMetrics.card.height / 2
+        let spacing = max(10, 14 * transform.scale)
+        let between = layout.items.filter { $0.depth > from.depth && $0.depth < to.depth }
+        // Rows sit one gap apart, so a channel just above or just below a
+        // card is what a straight run has to work with.
+        var candidates: [CGFloat] = [from.position.y, to.position.y, layout.frame.maxY - 22, layout.frame.minY + 22]
+        for item in between {
+            candidates.append(item.position.y - half - spacing)
+            candidates.append(item.position.y + half + spacing)
+        }
+        // Nearest to the row the line starts from, so the detour is the
+        // smallest one that works.
+        let ordered = candidates
+            .filter { layout.frame.minY + 12 <= $0 && $0 <= layout.frame.maxY - 12 }
+            .sorted { abs($0 - from.position.y) < abs($1 - from.position.y) }
+        return ordered.first { channel in
+            !between.contains { item in
+                let top = item.position.y - half
+                let bottom = item.position.y + half
+                return channel > top && channel < bottom
+            }
+        }
+    }
+
+    /// A y for an early leaf's line to travel right on before turning up to
+    /// the exit: the channel nearest the card that clears every card in the
+    /// columns it still has to pass. Nil when there are none to pass, or
+    /// when a card blocks every way through.
+    private func clearExitChannel(for item: MilestoneExpansionLayout.Item) -> CGFloat? {
+        let half = CanvasMetrics.card.height / 2
+        let spacing = max(10, 14 * transform.scale)
+        let ahead = layout.items.filter { $0.depth > item.depth }
+        guard !ahead.isEmpty else { return nil }
+        let candidates = ahead.flatMap { [$0.position.y - half - spacing, $0.position.y + half + spacing] }
+            + [layout.frame.maxY - 22, layout.frame.minY + 22]
+        let ordered = candidates
+            .filter { layout.frame.minY + 12 <= $0 && $0 <= layout.frame.maxY - 12 }
+            .sorted { abs($0 - item.position.y) < abs($1 - item.position.y) }
+        return ordered.first { channel in
+            !ahead.contains { other in
+                channel > other.position.y - half && channel < other.position.y + half
+            }
+        }
     }
 
     /// An empty workflow still expands: the frame says there is nothing
