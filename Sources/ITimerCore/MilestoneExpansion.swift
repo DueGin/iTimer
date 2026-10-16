@@ -72,10 +72,12 @@ public struct MilestoneExpansionLayout: Equatable, Sendable {
     }
 
     /// Lays `workflow`'s tasks out right of the milestone card centered at
-    /// `anchor`, one column per dependency depth, rows sorted by where the
-    /// task sits on its own canvas. Rows are at least `rowGap` apart, so
-    /// tasks saved at the same spot still read as a stack. Tasks whose
-    /// `TaskItem` is gone are filtered by `kept`; edges to them drop too.
+    /// `anchor`, in the same arrangement the canvas's tidy-up makes: one
+    /// column per dependency depth, rows ordered by upstream barycenter,
+    /// and a short column centered against the tallest one. Only display
+    /// positions come from this — the workflow's own node coordinates are
+    /// never touched. Tasks whose `TaskItem` is gone are filtered by
+    /// `kept`; edges to them drop too.
     public init(
         workflow: Workflow,
         anchor: CGPoint,
@@ -114,26 +116,28 @@ public struct MilestoneExpansionLayout: Equatable, Sendable {
         let downstream = Dictionary(grouping: links, by: \.from).mapValues { $0.map(\.to) }
         let startX = anchor.x + card.width / 2 + Self.followGap + innerCard.width / 2
 
-        // Column by depth; rows follow the workflow's own top-to-bottom
-        // reading order, spaced far enough that saved coordinates only set
-        // the order, never the distance.
-        var columns: [Int: [UUID]] = [:]
-        for id in ids {
-            columns[depth[id] ?? 0, default: []].append(id)
-        }
+        // Rows and column offsets come from the canvas's own tidy-up, so an
+        // expanded milestone reads exactly like the workflow does after
+        // "自动整理": one column per depth, rows ordered by upstream
+        // barycenter, short columns centered against the tallest. Only the
+        // seed positions of the visible tasks feed it; nothing is written
+        // back, so the workflow keeps its saved coordinates.
+        let listed = workflow.pruned(keeping: ids)
+        let tidy = listed.arranged(
+            columnGap: Double(Self.columnGap),
+            rowGap: Double(Self.rowGap)
+        )
+        let originX = listed.nodes.map(\.x).min() ?? 0
+        let originY = listed.nodes.map(\.y).min() ?? 0
         var positions: [UUID: CGPoint] = [:]
-        for (column, members) in columns {
-            let sorted = members.sorted {
-                let a = seats[$0] ?? .zero
-                let b = seats[$1] ?? .zero
-                return (a.y, a.x, $0.uuidString) < (b.y, b.x, $1.uuidString)
-            }
-            for (row, id) in sorted.enumerated() {
-                positions[id] = CGPoint(
-                    x: startX + Double(column) * Self.columnGap,
-                    y: anchor.y + Double(row) * Self.rowGap
-                )
-            }
+        for id in ids {
+            guard let spot = tidy[id] else { continue }
+            positions[id] = CGPoint(
+                x: startX + spot.x - originX,
+                // Row 0 stays level with the milestone card, so the group
+                // keeps its place on the roadmap however tall it grows.
+                y: anchor.y + spot.y - originY
+            )
         }
 
         var items: [Item] = []
