@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.10.4] - 2026-10-16
+
 ### 变更
 
 - 展开里程碑后的内部排版改用「自动整理」的排法：单张卡的列纵向居中于最长的列，行序按上游位置安排，和点过整理的工作流画布一致；展开仍然不改动任务的保存位置。
@@ -187,7 +189,9 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.2...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.4...HEAD
+[1.10.4]: https://github.com/DueGin/iTimer/compare/v1.10.3...v1.10.4
+[1.10.3]: https://github.com/DueGin/iTimer/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/DueGin/iTimer/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/DueGin/iTimer/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/DueGin/iTimer/compare/v1.9.0...v1.10.0
