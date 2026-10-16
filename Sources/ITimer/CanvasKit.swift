@@ -80,7 +80,8 @@ struct EdgeGeometry: Identifiable {
     var end: CGPoint
     var scale: CGFloat
     var style: Style
-    /// Optional bends for a group bridge routed around task cards.
+    /// Optional bends for a group bridge routed around task cards. Corners
+    /// are rounded when drawn, so a routed line still reads as one stroke.
     var via: [CGPoint] = []
 
     private var arrowLength: CGFloat { 9 * scale }
@@ -91,16 +92,70 @@ struct EdgeGeometry: Identifiable {
         return (CGPoint(x: start.x + reach, y: start.y), CGPoint(x: base.x - reach, y: base.y))
     }
 
+    /// Desired corner radius for a routed bend, before it is trimmed to
+    /// fit the shorter of the two segments meeting there.
+    private var cornerRadius: CGFloat { max(8, 18 * scale) }
+
+    /// The line as a point list: the ends, then each bend with the corner
+    /// rounded off. Drawing and hit testing both read this, so a line
+    /// answers to the shape the user sees.
+    private var strokes: [[CGPoint]] {
+        guard !via.isEmpty else { return [] }
+        var points = ([start] + via + [base]).filter { $0.x.isFinite && $0.y.isFinite }
+        points = points.reduce(into: []) { kept, point in
+            if let last = kept.last, hypot(point.x - last.x, point.y - last.y) < 0.01 { return }
+            kept.append(point)
+        }
+        guard points.count > 1 else { return [[start, base]] }
+        var segments: [[CGPoint]] = []
+        var current = [points[0]]
+        for index in 1..<(points.count - 1) {
+            let previous = points[index - 1], corner = points[index], next = points[index + 1]
+            let incoming = hypot(corner.x - previous.x, corner.y - previous.y)
+            let outgoing = hypot(next.x - corner.x, next.y - corner.y)
+            let radius = min(cornerRadius, incoming / 2, outgoing / 2)
+            guard radius > 0.5 else {
+                current.append(corner)
+                continue
+            }
+            let before = CGPoint(x: corner.x + (previous.x - corner.x) / incoming * radius,
+                                 y: corner.y + (previous.y - corner.y) / incoming * radius)
+            let after = CGPoint(x: corner.x + (next.x - corner.x) / outgoing * radius,
+                                y: corner.y + (next.y - corner.y) / outgoing * radius)
+            current.append(before)
+            segments.append(current)
+            // The arc through the corner, sampled finely enough to read as
+            // a curve and to answer a click.
+            let steps = 8
+            var arc = [before]
+            for step in 1...steps {
+                let s = CGFloat(step) / CGFloat(steps)
+                let u = 1 - s
+                arc.append(CGPoint(
+                    x: u * u * before.x + 2 * u * s * corner.x + s * s * after.x,
+                    y: u * u * before.y + 2 * u * s * corner.y + s * s * after.y
+                ))
+            }
+            current = arc
+        }
+        current.append(points[points.count - 1])
+        segments.append(current)
+        return segments
+    }
+
     var curve: Path {
-        if !via.isEmpty {
-            var path = Path()
-            path.addLines([start] + via + [base])
+        var path = Path()
+        if via.isEmpty {
+            let (first, second) = controls
+            path.move(to: start)
+            path.addCurve(to: base, control1: first, control2: second)
             return path
         }
-        let (first, second) = controls
-        var path = Path()
-        path.move(to: start)
-        path.addCurve(to: base, control1: first, control2: second)
+        for (index, segment) in strokes.enumerated() {
+            guard let first = segment.first else { continue }
+            if index == 0 { path.move(to: first) } else { path.addLine(to: first) }
+            for point in segment.dropFirst() { path.addLine(to: point) }
+        }
         return path
     }
 
@@ -116,7 +171,8 @@ struct EdgeGeometry: Identifiable {
 
     func point(at t: CGFloat) -> CGPoint {
         if !via.isEmpty {
-            let points = [start] + via + [base]
+            // Walked over the drawn points: the ends and the rounded bends.
+            let points = strokes.flatMap { $0 }
             let lengths = zip(points, points.dropFirst()).map { hypot($1.x - $0.x, $1.y - $0.y) }
             var remaining = lengths.reduce(0, +) * t
             for (index, length) in lengths.enumerated() {

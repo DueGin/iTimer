@@ -451,8 +451,7 @@ struct MilestoneExpansionView: View {
     /// without edges is both, so it meets the outside on either side.
     private var bridges: some View {
         let milestoneDone = workflow?.achievedAt != nil
-        let entry = CGPoint(x: layout.anchor.x + CanvasLayout.goal.card.width / 2 + MilestoneExpansionLayout.followGap - MilestoneExpansionLayout.padding,
-                            y: layout.anchor.y)
+        let entry = bridgeEntry
         var geometry = [EdgeGeometry(
             id: "bridge-entry-\(workflowID.uuidString)",
             start: transform.screen(layout.inDock),
@@ -476,27 +475,39 @@ struct MilestoneExpansionView: View {
                       CGPoint(x: layout.outDock.x - 14, y: layout.outDock.y)].map(transform.screen)
             ))
         }
-        for item in layout.items where item.root {
+        let roots = layout.items.filter(\.root)
+        // Roots stacked in a column would all arrive along one line, so the
+        // bridges into them leave the entry point fanned out.
+        let entries = fan(at: entry, towards: roots.map(\.position.y))
+        for (item, start) in zip(roots, entries) {
             geometry.append(EdgeGeometry(
                 id: "bridge-in-\(workflowID.uuidString)-\(item.taskID.uuidString)",
                 edge: nil,
-                start: transform.screen(entry),
+                start: transform.screen(start),
                 end: transform.screen(CGPoint(x: item.position.x - CanvasMetrics.card.width / 2, y: item.position.y)),
                 scale: transform.scale,
                 style: milestoneDone ? .met : .waiting
             ))
         }
+        // Exits share the lower gutter, so early leaves get a lane of their
+        // own and never run along the same line as a later card's exit.
+        var lanes: [CGFloat] = []
         for item in layout.items where item.leaf {
             // A leaf in an earlier column (including an independent
             // task) exits along the lower gutter, clear of later cards.
             let early = item.depth < (layout.items.map(\.depth).max() ?? 0)
             let rail = item.position.x + CanvasMetrics.card.width / 2 + 20
-            let bottom = layout.frame.maxY - 14
             let exit = layout.outDock.x - 14
-            let bends = early ? [
-                CGPoint(x: rail, y: item.position.y), CGPoint(x: rail, y: bottom),
-                CGPoint(x: exit, y: bottom), CGPoint(x: exit, y: layout.outDock.y)
-            ].map(transform.screen) : []
+            let bends: [CGPoint]
+            if early {
+                let gutter = nextGutter(&lanes)
+                bends = [
+                    CGPoint(x: rail, y: item.position.y), CGPoint(x: rail, y: gutter),
+                    CGPoint(x: exit, y: gutter), CGPoint(x: exit, y: layout.outDock.y)
+                ]
+            } else {
+                bends = []
+            }
             geometry.append(EdgeGeometry(
                 id: "bridge-out-\(workflowID.uuidString)-\(item.taskID.uuidString)",
                 edge: nil,
@@ -504,11 +515,42 @@ struct MilestoneExpansionView: View {
                 end: transform.screen(layout.outDock),
                 scale: transform.scale,
                 style: store.tasksByID[item.taskID]?.isCompleted == true ? .met : .waiting,
-                via: bends
+                via: bends.map(transform.screen)
             ))
         }
         return EdgeLayer(edges: geometry)
             .allowsHitTesting(false)
+    }
+
+    /// Where the milestone card hands the group over to its tasks.
+    private var bridgeEntry: CGPoint {
+        CGPoint(x: layout.anchor.x + CanvasLayout.goal.card.width / 2 + MilestoneExpansionLayout.followGap - MilestoneExpansionLayout.padding,
+                y: layout.anchor.y)
+    }
+
+    /// The entry point once per arriving root, so the bridges into a stack
+    /// of tasks leave on separate lines instead of one.
+    private func fan(at entry: CGPoint, towards targets: [CGFloat]) -> [CGPoint] {
+        guard targets.count > 1 else { return Array(repeating: entry, count: targets.count) }
+        let spread = min(9 * transform.scale, 70 * transform.scale / CGFloat(targets.count - 1))
+        let middle = CGFloat(targets.count - 1) / 2
+        return targets.enumerated().map { lane, y in
+            let offset = (CGFloat(lane) - middle) * spread
+            // The fan opens gently: a fraction of the offset at the entry
+            // point, the rest handed over by the first bend of each line.
+            let lean: CGFloat = y > entry.y ? 1 : (y < entry.y ? -1 : 0)
+            return CGPoint(x: entry.x, y: entry.y + offset * 0.4 + lean * abs(offset) * 0.15)
+        }
+    }
+
+    /// Next free lower-gutter line, kept clear of the ones already taken.
+    private func nextGutter(_ lanes: inout [CGFloat]) -> CGFloat {
+        let floor = layout.frame.maxY - 22
+        let spacing = max(8, 14 * transform.scale)
+        var candidate = floor
+        while lanes.contains(where: { abs($0 - candidate) < spacing - 0.5 }) { candidate -= spacing }
+        lanes.append(candidate)
+        return candidate
     }
 
     /// The workflow's real edges, leaving a card's right side and arriving
@@ -516,15 +558,24 @@ struct MilestoneExpansionView: View {
     private var innerEdges: some View {
         let byID = Dictionary(layout.items.map { ($0.taskID, $0) }, uniquingKeysWith: { first, _ in first })
         let tasks = store.tasksByID
+        var gutterLanes: [CGFloat] = []
         let geometry: [EdgeGeometry] = (workflow?.edges ?? []).compactMap { edge in
             guard let from = byID[edge.from], let to = byID[edge.to] else { return nil }
             let skip = to.depth > from.depth + 1
             let startRail = from.position.x + CanvasMetrics.card.width / 2 + 20
             let endRail = to.position.x - CanvasMetrics.card.width / 2 - 20
-            let bends = skip ? [
-                CGPoint(x: startRail, y: from.position.y), CGPoint(x: startRail, y: layout.frame.maxY - 14),
-                CGPoint(x: endRail, y: layout.frame.maxY - 14), CGPoint(x: endRail, y: to.position.y)
-            ].map(transform.screen) : []
+            let bends: [CGPoint]
+            if skip {
+                // A long edge goes under the cards in the columns it jumps,
+                // on a line of its own so two of them never overlap.
+                let gutter = nextGutter(&gutterLanes)
+                bends = [
+                    CGPoint(x: startRail, y: from.position.y), CGPoint(x: startRail, y: gutter),
+                    CGPoint(x: endRail, y: gutter), CGPoint(x: endRail, y: to.position.y)
+                ]
+            } else {
+                bends = []
+            }
             return EdgeGeometry(
                 id: "inner-\(workflowID.uuidString)-\(edge.id)",
                 edge: nil,
@@ -532,7 +583,7 @@ struct MilestoneExpansionView: View {
                 end: transform.screen(CGPoint(x: to.position.x - CanvasMetrics.card.width / 2, y: to.position.y)),
                 scale: transform.scale,
                 style: tasks[edge.from]?.isCompleted == true ? .met : .waiting,
-                via: bends
+                via: bends.map(transform.screen)
             )
         }
         return EdgeLayer(edges: geometry)

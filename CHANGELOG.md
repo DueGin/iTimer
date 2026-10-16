@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+## [1.10.2] - 2026-10-16
+
+### 修复
+
+- 展开里程碑后，绕过其他任务或从下方出口离开的依赖连线不再是直角折线，改为圆角；从同一个入口或出口出发的多条线错开走，不会叠在一条线上。
+
 ## [1.10.1] - 2026-10-15
 
 ### 修复
@@ -171,7 +177,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.1...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.2...HEAD
+[1.10.2]: https://github.com/DueGin/iTimer/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/DueGin/iTimer/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/DueGin/iTimer/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/DueGin/iTimer/compare/v1.8.2...v1.9.0
