@@ -32,6 +32,7 @@ def main():
     if section is None or not section.group(1).strip():
         parser.error(f"CHANGELOG.md 缺少 {version} 的更新内容，请先整理该版本的更新日志")
 
+    # 应用内更新显示更新内容时，从「### 下载与安装」起整段不显示（ReleaseNotes），改这个标题要同步。
     notes = f"""{section.group(1).strip()}
 
 ### 下载与安装

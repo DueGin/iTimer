@@ -14,6 +14,9 @@ struct ITimerApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
+            CommandGroup(after: .appInfo) {
+                UpdateCommands()
+            }
             CommandGroup(replacing: .newItem) {
                 NewItemCommands(store: .shared)
             }
@@ -54,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CalendarManager.shared.attach(to: TaskStore.shared)
             startClock()
             SelfTest.runIfRequested()
+            if DebugLaunchFile.current == nil {
+                Updater.shared.startAutomaticChecks()
+            }
         }
         startNudges()
     }

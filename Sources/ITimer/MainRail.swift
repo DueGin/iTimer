@@ -20,9 +20,17 @@ struct MainRail: View {
             Spacer(minLength: 12)
             SettingsLink {
                 icon("gearshape", selected: false)
+                    .overlay(alignment: .topTrailing) {
+                        if Updater.shared.offer != nil {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 7, height: 7)
+                                .offset(x: -5, y: 5)
+                        }
+                    }
             }
             .buttonStyle(railStyle(selected: false))
-            .help("设置（⌘,）")
+            .help(Updater.shared.offer.map { "设置（⌘,）· 新版本 \($0.version.description) 可以更新了" } ?? "设置（⌘,）")
             .accessibilityLabel("设置")
             .accessibilityIdentifier("rail-settings")
         }

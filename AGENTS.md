@@ -53,4 +53,6 @@ iTimer 是一个 macOS 菜单栏计时器，用 SwiftUI 写，Swift Package 管�
 swift test                       # 核心逻辑测试
 ```
 
-界面自测在 `Sources/ITimer/SelfTest.swift`。`goal`、`workflow`、`record`、`drawer` 几个场景支持 background 模式：不激活 App，事件直接发给窗口，不占用前台和鼠标。
+界面自测在 `Sources/ITimer/SelfTest.swift`。`goal`、`workflow`、`record`、`drawer`、`update` 几个场景支持 background 模式：不激活 App，事件直接发给窗口，不占用前台和鼠标。
+
+`update` 场景用环境变量 `ITIMER_UPDATE_FEED` 指向本地的 releases JSON（可以用 `file://`），会真的下载、校验并替换正在运行的应用包，所以只对复制出来的应用跑（例如 `open -n -g --env ITIMER_UPDATE_FEED=file:///tmp/feed/releases.json /tmp/copy/iTimer.app`）。`ITIMER_UPDATE_RELAUNCH_PROBE` 可以指定一个代替 iTimer 被重新打开的探针应用，避免新开的 iTimer 读到真实数据。

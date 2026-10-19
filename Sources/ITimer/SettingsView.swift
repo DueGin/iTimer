@@ -7,6 +7,8 @@ enum Preferences {
     static let brainSplitNudge = "itimer.nudge.brainSplit"
     static let longRunNudge = "itimer.nudge.longRun"
     static let workflowNudge = "itimer.nudge.workflow"
+    static let autoUpdateCheck = "itimer.update.auto"
+    static let updateLastChecked = "itimer.update.lastChecked"
 
     static func enabled(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
@@ -76,6 +78,8 @@ struct SettingsView: View {
                     .buttonStyle(PillButtonStyle(tint: .accentColor))
                 }
             }
+
+            UpdateSection(updater: .shared)
         }
         .formStyle(.grouped)
         .frame(width: 460)

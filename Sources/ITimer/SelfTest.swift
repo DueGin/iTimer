@@ -22,6 +22,7 @@ enum SelfTest {
             case "milestone": passed = await exerciseMilestoneExpansion()
             case "record": passed = await exerciseRecordTimes()
             case "drawer": passed = await exerciseDrawer()
+            case "update": passed = await exerciseUpdate()
             default: passed = await exercise()
             }
             note(passed ? "PASS" : "FAIL")
@@ -722,6 +723,112 @@ enum SelfTest {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
+    }
+}
+
+// MARK: - Software update
+
+extension SelfTest {
+    /// 设置 › 软件更新 against a local feed (`ITIMER_UPDATE_FEED`): finds the
+    /// newer release, shows it in 设置 and the panel footer, then downloads,
+    /// checks and swaps this very bundle. `ITIMER_UPDATE_RELAUNCH_PROBE`
+    /// names an app for the relaunch helper to open once this process exits
+    /// (not iTimer itself, which would open on the real data).
+    /// Window events only, so it also runs in background mode.
+    static func exerciseUpdate() async -> Bool {
+        let updater = Updater.shared
+        guard updater.feedOverridden else {
+            note("ITIMER_UPDATE_FEED is not set")
+            return false
+        }
+        // The app's defaults are the user's; put the check time back after.
+        let defaults = UserDefaults.standard
+        let savedChecked = defaults.object(forKey: Preferences.updateLastChecked)
+        defer { defaults.set(savedChecked, forKey: Preferences.updateLastChecked) }
+
+        func present(_ identifier: String) -> Bool { find(identifier: identifier, depth: 40) != nil }
+        func press(_ identifier: String) -> Bool {
+            guard let element = find(identifier: identifier, depth: 40) else {
+                note("missing \(identifier)")
+                return false
+            }
+            return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+
+        let settings = NSWindow(contentRect: NSRect(x: 120, y: 80, width: 460, height: 760), styleMask: [.titled], backing: .buffered, defer: false)
+        settings.title = "iTimer 软件更新自检"
+        settings.isReleasedWhenClosed = false
+        settings.appearance = NSAppearance(named: .aqua)
+        settings.contentView = NSHostingView(rootView: SettingsView(store: .shared))
+        await activateUnlessBackground()
+        bringForward(settings)
+        defer { settings.orderOut(nil) }
+        try? await Task.sleep(for: .milliseconds(600))
+
+        guard press("update-check"),
+              await wait(for: 10, label: "check", until: { updater.offer != nil || updater.outcome != nil }),
+              let offer = updater.offer else {
+            note("check found no update: \(String(describing: updater.outcome)) current=\(updater.currentVersion)")
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        guard present("update-offer"), present("update-notes"), present("update-install") else {
+            note("设置 does not show the offer, its notes and the install button")
+            return false
+        }
+        snapshot(settings, to: "/tmp/itimer-update-settings.png")
+        settings.appearance = NSAppearance(named: .darkAqua)
+        try? await Task.sleep(for: .milliseconds(150))
+        snapshot(settings, to: "/tmp/itimer-update-settings-dark.png")
+        settings.appearance = NSAppearance(named: .aqua)
+        note("check offered \(offer.version) (\(offer.installer.name)), notes for \(offer.notes.map(\.version.description))")
+
+        let panel = NSWindow(contentRect: NSRect(x: 600, y: 80, width: 380, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "iTimer 面板更新自检"
+        panel.isReleasedWhenClosed = false
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.contentView = NSHostingView(rootView: MenuBarView(store: .shared).background(.regularMaterial))
+        bringForward(panel)
+        try? await Task.sleep(for: .milliseconds(600))
+        guard present("update-badge") else {
+            panel.orderOut(nil)
+            note("the panel footer does not point at the update")
+            return false
+        }
+        snapshot(panel, to: "/tmp/itimer-update-panel.png")
+        panel.orderOut(nil)
+        note("panel footer shows the new version")
+
+        // Swap the bundle but stay running; the relaunch is checked below.
+        updater.finishInstall = { _ in }
+        guard press("update-install"),
+              await wait(for: 60, label: "install", until: { updater.outcome != nil && !updater.isBusy }) else {
+            return false
+        }
+        guard updater.outcome == .installed(offer.version) else {
+            note("install ended with \(String(describing: updater.outcome))")
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        snapshot(settings, to: "/tmp/itimer-update-installed.png")
+        let info = NSDictionary(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"))
+        let installed = info?["CFBundleShortVersionString"] as? String
+        guard installed == offer.version.description else {
+            note("bundle on disk is \(installed ?? "unreadable"), expected \(offer.version)")
+            return false
+        }
+        note("downloaded, checked and swapped \(Bundle.main.bundleURL.path) to \(installed ?? "")")
+
+        if let probe = ProcessInfo.processInfo.environment["ITIMER_UPDATE_RELAUNCH_PROBE"] {
+            do {
+                try Updater.spawnRelaunch(of: URL(fileURLWithPath: probe))
+            } catch {
+                note("relaunch helper did not start: \(error)")
+                return false
+            }
+            note("relaunch helper waits to open \(probe)")
+        }
+        return true
     }
 }
 

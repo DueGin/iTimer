@@ -888,6 +888,17 @@ struct MenuBarView: View {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
+            if let offer = Updater.shared.offer {
+                Button {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
+                } label: {
+                    Label("新版本 \(offer.version.description)", systemImage: "arrow.down.circle.fill")
+                }
+                .buttonStyle(PillButtonStyle(tint: .accentColor))
+                .help("iTimer \(offer.version.description) 可以更新了，在设置里查看更新内容并安装")
+                .accessibilityIdentifier("update-badge")
+            }
             Spacer()
             footerButton("退出", systemImage: "power", id: "quit-app") { NSApp.terminate(nil) }
         }
