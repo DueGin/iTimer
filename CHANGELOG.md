@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.12.0] - 2026-10-19
+
 ### 新增
 
 - 软件更新：启动时和之后每天检查一次 GitHub 上有没有新版本，只读取版本信息；可以在「设置 › 软件更新」里关掉自动检查。
@@ -219,7 +221,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.11.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/DueGin/iTimer/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/DueGin/iTimer/compare/v1.10.5...v1.11.0
 [1.10.5]: https://github.com/DueGin/iTimer/compare/v1.10.4...v1.10.5
 [1.10.4]: https://github.com/DueGin/iTimer/compare/v1.10.3...v1.10.4
