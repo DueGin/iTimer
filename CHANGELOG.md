@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.11.0] - 2026-10-19
+
 ### 新增
 
 - 主窗口「任务 › 全部」里的分区可以折叠：点「到点待开始」「进行中」「已暂停」「接下来」「时间待定」「今日完成」的标题，收起或展开这一组任务，折叠状态会记住。
@@ -209,7 +211,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.10.5...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/DueGin/iTimer/compare/v1.10.5...v1.11.0
 [1.10.5]: https://github.com/DueGin/iTimer/compare/v1.10.4...v1.10.5
 [1.10.4]: https://github.com/DueGin/iTimer/compare/v1.10.3...v1.10.4
 [1.10.3]: https://github.com/DueGin/iTimer/compare/v1.10.2...v1.10.3
