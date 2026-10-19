@@ -1,43 +1,24 @@
 import ITimerCore
 import SwiftUI
 
-/// Note and comments for one task. Replaces the task list the way the
-/// schedule composer does, so the latched popup height never has to grow.
+/// Note and comments for one task, the last part of its detail drawer.
 struct JournalView: View {
     var task: TaskItem
     var store: TaskStore
     var now: Date
-    var onClose: () -> Void
     @State private var note: String
     @State private var draft = ""
     @FocusState private var commentFocused: Bool
 
-    init(task: TaskItem, store: TaskStore, now: Date, onClose: @escaping () -> Void) {
+    init(task: TaskItem, store: TaskStore, now: Date) {
         self.task = task
         self.store = store
         self.now = now
-        self.onClose = onClose
         _note = State(initialValue: task.note)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(task.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("完成", action: close)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("journal-close")
-            }
-
             noteField
 
             Text("进展")
@@ -56,13 +37,6 @@ struct JournalView: View {
             commitNote()
         }
         .onDisappear(perform: commitNote)
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if !task.tags.isEmpty { parts.append(task.tags.map { "#\($0)" }.joined(separator: " ")) }
-        parts.append(task.isRunning ? "计时中" : task.isPending ? "未开始" : task.isCompleted ? "已完成" : "已暂停")
-        return parts.joined(separator: " · ")
     }
 
     private var noteField: some View {
@@ -168,10 +142,5 @@ struct JournalView: View {
         guard store.addComment(id: task.id, text: draft, at: now) != nil else { return }
         draft = ""
         commentFocused = true
-    }
-
-    private func close() {
-        commitNote()
-        onClose()
     }
 }

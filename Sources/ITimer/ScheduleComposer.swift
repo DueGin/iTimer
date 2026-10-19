@@ -7,6 +7,9 @@ struct ScheduleDraft: Equatable {
     var title: String = ""
     /// Start can only change before the item has been started.
     var startEditable = true
+    /// Estimate and reminder only mean something until the task is done;
+    /// a finished one keeps just its name and tags editable.
+    var scheduleEditable = true
     var start: Date
     /// false = time to be decided (时间待定); `start` is kept so switching
     /// back restores the last picked slot.
@@ -33,6 +36,7 @@ struct ScheduleDraft: Equatable {
             editingID: task.id,
             title: task.title,
             startEditable: task.isPending,
+            scheduleEditable: !task.isCompleted,
             start: task.scheduledStart ?? (task.isPending ? ScheduleOptions.suggestedStart(after: now) : now),
             hasTime: !task.isUndated,
             duration: task.plannedDuration,
@@ -59,15 +63,18 @@ struct ScheduleDraft: Equatable {
     }
 }
 
-/// Inline form for creating or editing a schedule. Deliberately built from
-/// plain buttons and a field-style time picker: popover/menu pickers steal
-/// focus and make the MenuBarExtra panel dismiss itself.
+/// Form for creating or editing a schedule, shown in the side drawer.
+/// Deliberately built from plain buttons and a field-style time picker:
+/// popover/menu pickers steal focus and make the MenuBarExtra panel
+/// dismiss itself. A new schedule ends in 添加日程 / 现在就开始; an edit has
+/// no buttons — the task details save it as it changes.
 struct ScheduleComposer: View {
     @Binding var draft: ScheduleDraft
     var now: Date
+    /// New: adds the schedule. Editing: saves now (Return in the name).
     var onSave: () -> Void
-    var onStartNow: () -> Void
-    var onCancel: () -> Void
+    /// New only: adds it and starts timing right away.
+    var onStartNow: () -> Void = {}
     var knownTags: [String] = TaskStore.shared.knownTags
     @FocusState private var titleFocused: Bool
     /// Inline day list. Not a Menu/Picker: those take focus and the
@@ -81,28 +88,24 @@ struct ScheduleComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(isNew ? "新建日程" : "编辑日程")
-                    .font(.headline)
-                Spacer()
-                Button("取消", action: onCancel)
-                    .buttonStyle(.plain)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("schedule-cancel")
-            }
             titleField
             form
-            Text(summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityIdentifier("schedule-summary")
-            actions
+            if draft.scheduleEditable {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("schedule-summary")
+            }
+            if isNew {
+                actions
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("schedule-composer")
         .onAppear {
+            // An edit opens without focus: a stray key would replace the name.
+            guard isNew else { return }
             DispatchQueue.main.async { titleFocused = true }
         }
     }
@@ -110,7 +113,7 @@ struct ScheduleComposer: View {
     // MARK: title
 
     private var titleField: some View {
-        TextField("日程名称", text: $draft.title)
+        TextField(isNew ? "日程名称" : "任务名称", text: $draft.title)
             .textFieldStyle(.plain)
             .font(.title3)
             .focused($titleFocused)
@@ -129,35 +132,37 @@ struct ScheduleComposer: View {
 
     private var form: some View {
         VStack(spacing: 0) {
-            if draft.startEditable {
-                row("日期") { dayRow }
-                if dayListOpen {
-                    dayList
-                }
-                divider
-                if draft.hasTime {
-                    row("时间") { timeControls }
+            if draft.scheduleEditable {
+                if draft.startEditable {
+                    row("日期") { dayRow }
+                    if dayListOpen {
+                        dayList
+                    }
                     divider
+                    if draft.hasTime {
+                        row("时间") { timeControls }
+                        divider
+                    }
                 }
-            }
-            row("预计") {
-                SegmentBar(
-                    options: ScheduleOptions.durations.map { (Self.shortDuration($0), Optional($0)) } + [("不定", nil)],
-                    selection: $draft.duration
-                )
-                .accessibilityIdentifier("schedule-duration")
-            }
-            if draft.hasTime || !draft.startEditable {
-                divider
-                row("提醒") {
+                row("预计") {
                     SegmentBar(
-                        options: ScheduleOptions.reminderLeads.map { (Self.shortReminder($0), $0) },
-                        selection: $draft.reminderLead
+                        options: ScheduleOptions.durations.map { (Self.shortDuration($0), Optional($0)) } + [("不定", nil)],
+                        selection: $draft.duration
                     )
-                    .accessibilityIdentifier("schedule-reminder")
+                    .accessibilityIdentifier("schedule-duration")
                 }
+                if draft.hasTime || !draft.startEditable {
+                    divider
+                    row("提醒") {
+                        SegmentBar(
+                            options: ScheduleOptions.reminderLeads.map { (Self.shortReminder($0), $0) },
+                            selection: $draft.reminderLead
+                        )
+                        .accessibilityIdentifier("schedule-reminder")
+                    }
+                }
+                divider
             }
-            divider
             row("标签") {
                 TagEditor(tags: $draft.tags, known: knownTags)
             }
@@ -354,18 +359,16 @@ struct ScheduleComposer: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
-            if isNew {
-                Button(action: onStartNow) {
-                    Label("现在就开始", systemImage: "play.fill")
-                }
-                .buttonStyle(ActionButtonStyle())
-                .disabled(!draft.titleValid)
-                .help("跳过排期，按这个预计时长立即计时")
-                .accessibilityIdentifier("schedule-start-now")
+            Button(action: onStartNow) {
+                Label("现在就开始", systemImage: "play.fill")
             }
+            .buttonStyle(ActionButtonStyle())
+            .disabled(!draft.titleValid)
+            .help("跳过排期，按这个预计时长立即计时")
+            .accessibilityIdentifier("schedule-start-now")
             Spacer()
             Button(action: onSave) {
-                Label(isNew ? "添加日程" : "保存", systemImage: isNew ? "plus" : "checkmark")
+                Label("添加日程", systemImage: "plus")
             }
             .buttonStyle(ActionButtonStyle(prominent: true))
             .disabled(!draft.titleValid)

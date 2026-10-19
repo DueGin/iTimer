@@ -159,9 +159,9 @@ struct MainView: View {
         switch destination {
         case .tasks:
             let filter = TaskFilter(raw: taskFilterRaw)
+            // Caps the list's width itself, so its side drawer can sit at
+            // the window's right edge.
             MenuBarView(store: store, embedded: true, filter: filter)
-                .frame(maxWidth: 760)
-                .frame(maxWidth: .infinity)
                 .navigationTitle(filter == .all ? "任务" : "任务 › \(filter.title)")
         case .goals:
             ContentUnavailableView {

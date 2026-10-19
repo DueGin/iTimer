@@ -13,9 +13,12 @@ struct MenuBarView: View {
     @State private var editingID: UUID?
     @State private var renameDraft = ""
     @State private var latchedHeight: CGFloat?
+    /// New schedule being filled in, in the side drawer.
     @State private var composer: ScheduleDraft?
-    /// Task whose note and comments fill the panel, like the composer.
-    @State private var journalID: UUID?
+    /// Task whose details fill the side drawer.
+    @State private var detailID: UUID?
+    /// Details opened to add a subtask: its field takes focus once.
+    @State private var subtaskFocusID: UUID?
     /// Completed timing draft, kept stable while the observable clock ticks.
     @State private var recordToEdit: TaskItem?
     /// Brain buddy's speech; replaces the verdict line for a few seconds.
@@ -27,10 +30,9 @@ struct MenuBarView: View {
     @State private var openMenus = 0
     /// Parents whose subtasks are folded away, as comma-joined ids.
     @AppStorage("collapsedParents") private var collapsedParentsRaw = ""
-    /// Parent whose inline "add subtask" field is open.
-    @State private var subtaskParentID: UUID?
-    @State private var subtaskDraft = ""
-    @FocusState private var subtaskFocused: Bool
+    /// Sections folded on the main window's 全部 page, as comma-joined
+    /// keys ("paused", "doneToday", …).
+    @AppStorage("collapsedSections") private var collapsedSectionsRaw = ""
 
     var body: some View {
         // While the panel is open the status label is frozen and the store
@@ -38,7 +40,7 @@ struct MenuBarView: View {
         // panel's own timers stay live without touching the label.
         // Paused while a context menu is open; resumes on close.
         TimelineView(SecondTicks(paused: openMenus > 0)) { context in
-            content(now: max(context.date, store.now))
+            layout(now: max(context.date, store.now))
         }
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
             openMenus += 1
@@ -46,7 +48,6 @@ struct MenuBarView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
             openMenus = max(0, openMenus - 1)
         }
-        .padding(embedded ? 18 : 16)
         // Height is latched while the panel is open: MenuBarExtra windows
         // resize unreliably mid-interaction (observed as broken layout after
         // completing a task). Recomputed next time the panel opens.
@@ -106,11 +107,83 @@ struct MenuBarView: View {
         .onReceive(NotificationCenter.default.publisher(for: .iTimerPanelClosed)) { _ in
             // Reopening the panel should show the list, not a stale form.
             guard !embedded else { return }
-            composer = nil
+            closeDrawer()
             recordToEdit = nil
             // onDisappear rarely fires here, so release the latch now or the
             // next open keeps a stale height (e.g. after adding schedules).
             latchedHeight = nil
+        }
+    }
+
+    /// The list, with the side drawer to its right: a column of its own in
+    /// the main window, sliding over the list in the fixed-width panel.
+    @ViewBuilder
+    private func layout(now: Date) -> some View {
+        if embedded {
+            HStack(spacing: 0) {
+                content(now: now)
+                    .padding(18)
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
+                if drawerOpen {
+                    HStack(spacing: 0) {
+                        Divider()
+                        drawer(now: now)
+                    }
+                    .transition(.move(edge: .trailing))
+                }
+            }
+        } else {
+            content(now: now)
+                .padding(16)
+                .overlay(alignment: .trailing) {
+                    ZStack(alignment: .trailing) {
+                        if drawerOpen {
+                            // The strip of list left showing closes it.
+                            Color.black.opacity(0.18)
+                                .contentShape(Rectangle())
+                                .onTapGesture(perform: closeDrawer)
+                                .accessibilityIdentifier("drawer-scrim")
+                                .transition(.opacity)
+                            drawer(now: now)
+                                .shadow(color: .black.opacity(0.18), radius: 10, x: -2)
+                                .transition(.move(edge: .trailing))
+                        }
+                    }
+                }
+        }
+    }
+
+    private var detailTask: TaskItem? {
+        detailID.flatMap { id in store.tasks.first { $0.id == id } }
+    }
+
+    private var drawerOpen: Bool { composer != nil || detailTask != nil }
+
+    @ViewBuilder
+    private func drawer(now: Date) -> some View {
+        if composer != nil {
+            SideDrawer(title: "新建日程", onClose: closeDrawer) {
+                ScheduleComposer(
+                    draft: composerBinding,
+                    now: now,
+                    onSave: saveComposer,
+                    onStartNow: startComposerNow
+                )
+            }
+        } else if let task = detailTask {
+            SideDrawer(title: "任务详情", onClose: closeDrawer) {
+                TaskDetailView(
+                    task: task,
+                    store: store,
+                    now: now,
+                    onOpen: { openDetail($0) },
+                    focusSubtask: subtaskFocusID == task.id,
+                    onSubtaskFocused: { subtaskFocusID = nil },
+                    onSubtaskAdded: { unfoldSubtasks(of: task.id) }
+                )
+                .id(task.id)
+            }
         }
     }
 
@@ -128,28 +201,6 @@ struct MenuBarView: View {
                     RecordTimeEditor(task: task, store: store, now: now) { recordToEdit = nil }
                         .id(task.id)
                         .padding(1)
-                }
-                .scrollIndicators(.never)
-                .frame(maxHeight: .infinity, alignment: .top)
-            } else if let journalID, let task = store.tasks.first(where: { $0.id == journalID }) {
-                ScrollView {
-                    JournalView(task: task, store: store, now: now) { self.journalID = nil }
-                        .padding(1)
-                }
-                .scrollIndicators(.never)
-                .frame(maxHeight: .infinity, alignment: .top)
-            } else if composer != nil {
-                // Takes the hero + list + input space so the latched popup
-                // height never has to grow while the panel is open.
-                ScrollView {
-                    ScheduleComposer(
-                        draft: composerBinding,
-                        now: now,
-                        onSave: saveComposer,
-                        onStartNow: startComposerNow,
-                        onCancel: { composer = nil }
-                    )
-                    .padding(1)
                 }
                 .scrollIndicators(.never)
                 .frame(maxHeight: .infinity, alignment: .top)
@@ -182,8 +233,8 @@ struct MenuBarView: View {
         let listHeight: CGFloat = open + done == 0 ? 58 : min(rows, 380)
         let suggestions: CGFloat = store.suggestions(limit: 1).isEmpty ? 0 : 32
         let note: CGFloat = heroNote(now: store.now) == nil ? 0 : 18
-        // The floor leaves room for the schedule composer, which replaces
-        // hero + list without resizing the panel.
+        // The floor leaves room for the side drawer and the record editor,
+        // which cover or replace hero + list without resizing the panel.
         return max(366 + listHeight + suggestions + note, 500)
     }
 
@@ -425,18 +476,21 @@ struct MenuBarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(sections) { section in
-                        sectionTitle(section.kind.title, count: section.count, tint: section.kind.tint)
-                        ForEach(section.groups) { group in
-                            groupRows(group, now: now)
+                        sectionTitle(section.kind.title, count: section.count, tint: section.kind.tint, fold: section.kind.key)
+                        if !isFolded(section.kind.key) {
+                            ForEach(section.groups) { group in
+                                groupRows(group, now: now)
+                            }
                         }
                     }
                     if !done.isEmpty {
-                        sectionTitle("今日完成", count: done.count)
-                        ForEach(nestedEntries(done)) { entry in
+                        sectionTitle("今日完成", count: done.count, fold: Self.doneKey)
+                        ForEach(isFolded(Self.doneKey) ? [] : nestedEntries(done)) { entry in
                             DoneRow(
                                 task: entry.task,
                                 store: store,
-                                onJournal: { openJournal(entry.task.id) },
+                                selected: detailID == entry.task.id,
+                                onEdit: { toggleDetail(entry.task.id) },
                                 onEditTime: { openRecordEditor(entry.task) }
                             )
                                 .draggable(entry.task.id.uuidString)
@@ -469,6 +523,35 @@ struct MenuBarView: View {
         }
 
         var tint: Color? { self == .due ? .orange : nil }
+
+        /// Stored fold key; the same words as the 任务 page's filters.
+        var key: String {
+            switch self {
+            case .due: "due"
+            case .running: "running"
+            case .paused: "paused"
+            case .upcoming: "upcoming"
+            case .undated: "undated"
+            }
+        }
+    }
+
+    private static let doneKey = "doneToday"
+
+    /// Only the main window's 全部 page folds sections; elsewhere the list
+    /// is one section, or the panel, whose height is sized to its rows.
+    private var foldsSections: Bool { embedded && filter == .all }
+
+    private func isFolded(_ key: String) -> Bool {
+        foldsSections && collapsedSectionsRaw.split(separator: ",").contains { $0 == key }
+    }
+
+    private func toggleSection(_ key: String) {
+        var folded = Set(collapsedSectionsRaw.split(separator: ",").map(String.init))
+        if !folded.insert(key).inserted { folded.remove(key) }
+        withAnimation(.easeOut(duration: 0.15)) {
+            collapsedSectionsRaw = folded.sorted().joined(separator: ",")
+        }
     }
 
     /// A parent with its open subtasks, or a task on its own.
@@ -523,8 +606,7 @@ struct MenuBarView: View {
         }
     }
 
-    /// The parent row, its subtasks indented under it unless folded, and
-    /// the open "add subtask" field last.
+    /// The parent row and its subtasks indented under it unless folded.
     private func groupRows(_ group: TaskGroup, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             // Draggable onto a workflow canvas in the main window.
@@ -534,9 +616,6 @@ struct MenuBarView: View {
                 row(child, now: now, nested: true)
                     .draggable(child.id.uuidString)
                     .padding(.leading, 18)
-            }
-            if subtaskParentID == group.head.id {
-                subtaskField(group.head)
             }
         }
     }
@@ -551,6 +630,12 @@ struct MenuBarView: View {
         // Forget parents that are gone.
         folded.formIntersection(store.tasks.map(\.id))
         collapsedParentsRaw = folded.map(\.uuidString).sorted().joined(separator: ",")
+    }
+
+    /// Adding a subtask shows the parent's subtasks again.
+    private func unfoldSubtasks(of parentID: UUID) {
+        guard collapsedParents.contains(parentID) else { return }
+        withAnimation(.easeOut(duration: 0.15)) { setSubtasks(of: parentID, collapsed: false) }
     }
 
     /// A subtask hidden under its folded parent. Once the parent is done
@@ -581,63 +666,6 @@ struct MenuBarView: View {
         return entries
     }
 
-    /// Inline field under a parent. Each Return adds one step (time to be
-    /// decided, not started) and keeps the field open for the next.
-    private func subtaskField(_ parent: TaskItem) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.turn.down.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            TextField("「\(parent.title)」的子任务，回车添加", text: $subtaskDraft)
-                .textFieldStyle(.plain)
-                .font(.callout)
-                .focused($subtaskFocused)
-                .onSubmit { commitSubtask(under: parent.id) }
-                .onExitCommand(perform: endSubtask)
-                .onChange(of: subtaskFocused) { _, focused in
-                    if !focused && subtaskDraft.trimmingCharacters(in: .whitespaces).isEmpty { endSubtask() }
-                }
-                .accessibilityIdentifier("subtask-input-\(parent.id.uuidString)")
-        }
-        .padding(.leading, 28)
-        .padding(.trailing, 8)
-        .padding(.vertical, 6)
-        .background(Theme.focused.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-
-    private func beginSubtask(under parentID: UUID) {
-        composer = nil
-        journalID = nil
-        recordToEdit = nil
-        editingID = nil
-        subtaskDraft = ""
-        subtaskParentID = parentID
-        subtaskFocused = true
-        if collapsedParents.contains(parentID) {
-            withAnimation(.easeOut(duration: 0.15)) { setSubtasks(of: parentID, collapsed: false) }
-        }
-    }
-
-    private func commitSubtask(under parentID: UUID) {
-        guard store.addSchedule(
-            title: subtaskDraft,
-            parentID: parentID,
-            start: nil,
-            plannedDuration: nil,
-            reminderLead: nil
-        ) != nil else {
-            if subtaskDraft.trimmingCharacters(in: .whitespaces).isEmpty { endSubtask() }
-            return
-        }
-        subtaskDraft = ""
-        subtaskFocused = true
-    }
-
-    private func endSubtask() {
-        subtaskDraft = ""
-        subtaskParentID = nil
-    }
-
     private func row(_ task: TaskItem, now: Date, nested: Bool = false) -> some View {
         TaskRow(
             task: task,
@@ -646,9 +674,9 @@ struct MenuBarView: View {
             nested: nested,
             editingID: $editingID,
             renameDraft: $renameDraft,
-            onEdit: { composer = .editing(task, asOf: now) },
-            onAddSubtask: { beginSubtask(under: task.id) },
-            onJournal: { openJournal(task.id) },
+            selected: detailID == task.id,
+            onEdit: { toggleDetail(task.id) },
+            onAddSubtask: { openDetail(task.id, addingSubtask: true) },
             subtasksCollapsed: collapsedParents.contains(task.id),
             onToggleSubtasks: {
                 let folded = collapsedParents.contains(task.id)
@@ -657,8 +685,35 @@ struct MenuBarView: View {
         )
     }
 
-    private func sectionTitle(_ title: String, count: Int, tint: Color? = nil) -> some View {
+    /// With a fold key on the 全部 page, the whole title row folds and
+    /// unfolds its section.
+    @ViewBuilder
+    private func sectionTitle(_ title: String, count: Int, tint: Color? = nil, fold key: String? = nil) -> some View {
+        if let key, foldsSections {
+            let folded = isFolded(key)
+            Button { toggleSection(key) } label: {
+                sectionLabel(title, count: count, tint: tint, folded: folded)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(folded ? "展开「\(title)」" : "折叠「\(title)」")
+            .accessibilityLabel(folded ? "展开\(title)" : "折叠\(title)")
+            .accessibilityIdentifier("toggle-section-\(key)")
+        } else {
+            sectionLabel(title, count: count, tint: tint, folded: nil)
+        }
+    }
+
+    /// `folded` nil = the section cannot fold, so no chevron.
+    private func sectionLabel(_ title: String, count: Int, tint: Color?, folded: Bool?) -> some View {
         HStack(spacing: 4) {
+            if let folded {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
+                    .rotationEffect(.degrees(folded ? 0 : 90))
+            }
             Text(title)
                 .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
             Text("\(count)")
@@ -862,55 +917,71 @@ struct MenuBarView: View {
 
     /// Whatever is typed in the quick field becomes the schedule's name.
     private func openComposer() {
-        journalID = nil
         recordToEdit = nil
-        composer = .new(title: draft, asOf: store.now)
-        draft = ""
         editingID = nil
+        withAnimation(.easeOut(duration: 0.2)) {
+            detailID = nil
+            composer = .new(title: draft, asOf: store.now)
+        }
+        draft = ""
     }
 
-    private func openJournal(_ id: UUID) {
-        composer = nil
+    /// Shows the task's details in the drawer, replacing whatever it held.
+    private func openDetail(_ id: UUID, addingSubtask: Bool = false) {
         recordToEdit = nil
         editingID = nil
-        journalID = id
+        subtaskFocusID = addingSubtask ? id : nil
+        if addingSubtask { unfoldSubtasks(of: id) }
+        withAnimation(.easeOut(duration: 0.2)) {
+            composer = nil
+            detailID = id
+        }
+    }
+
+    /// A row's edit button: opens its details, or closes them when they
+    /// are already showing.
+    private func toggleDetail(_ id: UUID) {
+        if detailID == id {
+            closeDrawer()
+        } else {
+            openDetail(id)
+        }
+    }
+
+    private func closeDrawer() {
+        subtaskFocusID = nil
+        withAnimation(.easeOut(duration: 0.2)) {
+            composer = nil
+            detailID = nil
+        }
     }
 
     private func openRecordEditor(_ task: TaskItem) {
-        composer = nil
-        journalID = nil
+        closeDrawer()
         editingID = nil
-        endSubtask()
         recordToEdit = task
     }
 
     private var composerBinding: Binding<ScheduleDraft> {
         Binding(
             get: { composer ?? .new(asOf: store.now) },
-            set: { composer = $0 }
+            // The focused name field commits as the drawer slides away;
+            // that write must not bring the drawer back.
+            set: { if composer != nil { composer = $0 } }
         )
     }
 
     private func saveComposer() {
         guard let value = composer, value.titleValid else { return }
-        let labels = value.resolved
-        if let id = value.editingID {
-            if store.tasks.first(where: { $0.id == id })?.title != labels.title {
-                store.rename(id: id, title: labels.title)
-            }
-            store.setTags(id: id, labels.tags)
-            store.updateSchedule(id: id, start: value.scheduledStart, plannedDuration: value.duration, reminderLead: value.reminderLead)
-        } else {
-            guard store.addSchedule(
-                title: value.title,
-                tags: value.tags,
-                parentID: value.parentID,
-                start: value.scheduledStart,
-                plannedDuration: value.duration,
-                reminderLead: value.reminderLead
-            ) != nil else { return }
-        }
-        composer = nil
+        guard store.addSchedule(
+            title: value.title,
+            tags: value.tags,
+            parentID: value.parentID,
+            start: value.scheduledStart,
+            plannedDuration: value.duration,
+            reminderLead: value.reminderLead
+        ) != nil else { return }
+        closeDrawer()
     }
 
     /// Same as adding, but timing starts right away instead of at a set time.
@@ -925,7 +996,7 @@ struct MenuBarView: View {
                   reminderLead: value.reminderLead
               ) else { return }
         store.resume(id: task.id)
-        composer = nil
+        closeDrawer()
     }
 
     private func revealMain() {
@@ -952,12 +1023,12 @@ struct TaskRow: View {
     var nested = false
     @Binding var editingID: UUID?
     @Binding var renameDraft: String
-    /// Opens the schedule composer for this item (time, estimate, reminder).
+    /// Its details are open in the side drawer.
+    var selected = false
+    /// Opens (or closes) its details: schedule, subtasks, note and progress.
     var onEdit: () -> Void = {}
-    /// Opens the composer as a new subtask of this row.
+    /// Opens its details with the add-subtask field focused.
     var onAddSubtask: () -> Void = {}
-    /// Opens the note and comments for this row.
-    var onJournal: () -> Void = {}
     /// The subtasks are folded away under this row.
     var subtasksCollapsed = false
     /// Folds or unfolds the subtasks; nil where they are not nested.
@@ -1007,6 +1078,9 @@ struct TaskRow: View {
                     ForEach(task.tags, id: \.self) { tag in
                         TagPill(tag: tag)
                     }
+                    if task.hasJournal {
+                        JournalMark(hint: journalHint)
+                    }
                     Text(subtitle)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(subtitleWarns ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
@@ -1030,6 +1104,12 @@ struct TaskRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(isDue ? Color.orange.opacity(hovering ? 0.12 : 0.07) : Color.primary.opacity(hovering ? 0.05 : 0))
         )
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.focused.opacity(0.55), lineWidth: 1)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { inside in
             // The open menu covers the row; a hover flip would rebuild it.
@@ -1174,20 +1254,11 @@ struct TaskRow: View {
                     commitRename()
                 }
             } else {
-                if task.isRoot {
-                    IconButton(title: "添加子任务", systemImage: "text.badge.plus", identifier: "add-subtask-\(task.id.uuidString)", action: onAddSubtask)
-                }
                 IconButton(
-                    title: journalHint,
-                    systemImage: task.hasJournal ? "text.bubble.fill" : "text.bubble",
-                    tint: task.hasJournal ? Theme.focused : .primary,
-                    identifier: "journal-\(task.id.uuidString)",
-                    action: onJournal
-                )
-                IconButton(
-                    title: task.isUndated ? "编辑：定个时间、预计时长、标签" : task.isPending ? "编辑：名称、时间、预计时长、提醒、标签" : "编辑：名称、预计时长、提醒、标签",
+                    title: task.isRoot ? "编辑：日程、子任务、备注和进展" : "编辑：日程、备注和进展",
                     systemImage: "slider.horizontal.3",
-                    identifier: "edit-schedule-\(task.id.uuidString)",
+                    tint: selected ? Theme.focused : .primary,
+                    identifier: "edit-task-\(task.id.uuidString)",
                     action: onEdit
                 )
             }
@@ -1263,18 +1334,18 @@ struct TaskRow: View {
             Button("完成") { store.complete(id: task.id) }
         }
         Divider()
-        Button(journalHint, action: onJournal)
         if let onToggleSubtasks, !store.subtasks(of: task.id).isEmpty {
             Button(subtasksCollapsed ? "展开子任务" : "折叠子任务", action: onToggleSubtasks)
         }
         if task.isRoot {
-            LabelMenus(task: task, store: store, onEditLabels: beginLabelEdit, onAddSubtask: beginSubtask)
+            LabelMenus(task: task, store: store, onEditLabels: beginLabelEdit, onAddSubtask: onAddSubtask)
         } else {
             LabelMenus(task: task, store: store, onEditLabels: beginLabelEdit)
         }
         WorkflowMenu(task: task, store: store)
         Divider()
-        Button(task.isPending ? "编辑日程…" : "编辑预计与提醒…", action: onEdit)
+        // Opens only; the row's button also closes what is already open.
+        Button("编辑…") { if !selected { onEdit() } }
         Button("改名", action: beginRename)
         Button("删除", role: .destructive) { store.delete(id: task.id) }
     }
@@ -1298,22 +1369,12 @@ struct TaskRow: View {
         return children == 0 ? "再点一次删除" : "再点一次删除（连同 \(children) 个子任务）"
     }
 
-    private var journalHint: String {
-        if !task.note.isEmpty && !task.comments.isEmpty { return "备注和 \(task.comments.count) 条进展" }
-        if !task.comments.isEmpty { return "\(task.comments.count) 条进展" }
-        if !task.note.isEmpty { return "有备注" }
-        return "备注和进展"
-    }
+    private var journalHint: String { JournalMark.hint(for: task) }
 
     private func commitRename() {
         if store.retitle(id: task.id, input: renameDraft) {
             editingID = nil
         }
-    }
-
-    /// Opens the composer as a new subtask of this row.
-    private func beginSubtask() {
-        onAddSubtask()
     }
 }
 
@@ -1349,7 +1410,10 @@ private struct PlanBar: View {
 struct DoneRow: View {
     var task: TaskItem
     var store: TaskStore
-    var onJournal: () -> Void = {}
+    /// Its details are open in the side drawer.
+    var selected = false
+    /// Opens (or closes) its details: name, tags, note and progress.
+    var onEdit: () -> Void = {}
     var onEditTime: () -> Void = {}
     @State private var hovering = false
 
@@ -1363,11 +1427,20 @@ struct DoneRow: View {
                 .font(.callout)
                 .foregroundStyle(.primary.opacity(0.7))
                 .lineLimit(1)
+            if task.hasJournal {
+                JournalMark(hint: JournalMark.hint(for: task))
+            }
             Spacer(minLength: 6)
             Text(DurationFormat.prose(task.duration(asOf: store.now)))
                 .font(.callout.weight(.medium).monospacedDigit())
                 .foregroundStyle(.secondary)
-            IconButton(title: "备注和进展", systemImage: task.hasJournal ? "text.bubble.fill" : "text.bubble", tint: task.hasJournal ? Theme.focused : .primary, identifier: "journal-\(task.id.uuidString)", action: onJournal)
+            IconButton(
+                title: "编辑：名称、标签、备注和进展",
+                systemImage: "slider.horizontal.3",
+                tint: selected ? Theme.focused : .primary,
+                identifier: "edit-task-\(task.id.uuidString)",
+                action: onEdit
+            )
             IconButton(title: "修改计时时间", systemImage: "pencil", identifier: "edit-record-time-\(task.id.uuidString)", action: onEditTime)
                 .disabled(task.segments.isEmpty)
             IconButton(title: "再来一段", systemImage: "arrow.counterclockwise", identifier: "again-\(task.id.uuidString)") {
@@ -1381,6 +1454,12 @@ struct DoneRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(hovering ? 0.05 : 0))
         )
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Theme.focused.opacity(0.55), lineWidth: 1)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { inside in
             guard !MenuTracking.isOpen else { return }
@@ -1388,7 +1467,7 @@ struct DoneRow: View {
         }
         .contextMenu {
             Button("再来一段") { store.resume(id: task.id) }
-            Button("备注和进展", action: onJournal)
+            Button("编辑…") { if !selected { onEdit() } }
             Button("修改计时时间…", action: onEditTime)
                 .disabled(task.segments.isEmpty)
             Divider()
@@ -1396,7 +1475,28 @@ struct DoneRow: View {
             Divider()
             Button("删除", role: .destructive) { store.delete(id: task.id) }
         }
+        // Keeps the buttons' own identifiers instead of the row's.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("done-row-\(task.id.uuidString)")
+    }
+}
+
+/// On a row: the task has a note or progress, kept in its details.
+struct JournalMark: View {
+    var hint: String
+
+    var body: some View {
+        Image(systemName: "text.bubble.fill")
+            .font(.system(size: 9))
+            .foregroundStyle(Theme.focused.opacity(0.8))
+            .help(hint)
+            .accessibilityLabel(hint)
+    }
+
+    static func hint(for task: TaskItem) -> String {
+        if !task.note.isEmpty && !task.comments.isEmpty { return "有备注和 \(task.comments.count) 条进展" }
+        if !task.comments.isEmpty { return "有 \(task.comments.count) 条进展" }
+        return "有备注"
     }
 }
 

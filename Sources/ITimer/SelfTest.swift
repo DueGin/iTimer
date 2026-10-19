@@ -21,6 +21,7 @@ enum SelfTest {
             case "goal-search": passed = await exerciseGoalSearch()
             case "milestone": passed = await exerciseMilestoneExpansion()
             case "record": passed = await exerciseRecordTimes()
+            case "drawer": passed = await exerciseDrawer()
             default: passed = await exercise()
             }
             note(passed ? "PASS" : "FAIL")
@@ -295,57 +296,61 @@ enum SelfTest {
         render(MenuBarView(store: store), size: NSSize(width: 380, height: 640), to: "/tmp/itimer-schedule-popup.png")
         var draft = ScheduleDraft.new(title: "准备季度汇报 #汇报 #PPT", asOf: now)
         render(
-            ScheduleComposer(
-                draft: Binding(get: { draft }, set: { draft = $0 }),
-                now: now,
-                onSave: {}, onStartNow: {}, onCancel: {}
-            )
-            .padding(16),
-            size: NSSize(width: 380, height: 520),
+            SideDrawer(title: "新建日程", onClose: {}) {
+                ScheduleComposer(
+                    draft: Binding(get: { draft }, set: { draft = $0 }),
+                    now: now,
+                    onSave: {}
+                )
+            },
+            size: NSSize(width: SideDrawer<EmptyView>.width, height: 570),
             to: "/tmp/itimer-composer.png"
         )
         render(
-            ScheduleComposer(
-                draft: Binding(get: { draft }, set: { draft = $0 }),
-                now: now,
-                onSave: {}, onStartNow: {}, onCancel: {},
-                dayListOpen: true
-            )
-            .padding(16),
-            size: NSSize(width: 380, height: 720),
+            SideDrawer(title: "新建日程", onClose: {}) {
+                ScheduleComposer(
+                    draft: Binding(get: { draft }, set: { draft = $0 }),
+                    now: now,
+                    onSave: {},
+                    dayListOpen: true
+                )
+            },
+            size: NSSize(width: SideDrawer<EmptyView>.width, height: 770),
             to: "/tmp/itimer-composer-days.png"
         )
         var far = ScheduleDraft.new(title: "续签合同", asOf: now)
         far.start = Calendar.current.date(byAdding: .month, value: 5, to: far.start) ?? far.start
         render(
-            ScheduleComposer(
-                draft: Binding(get: { far }, set: { far = $0 }),
-                now: now,
-                onSave: {}, onStartNow: {}, onCancel: {},
-                dayListOpen: true
-            )
-            .padding(16),
-            size: NSSize(width: 380, height: 720),
+            SideDrawer(title: "新建日程", onClose: {}) {
+                ScheduleComposer(
+                    draft: Binding(get: { far }, set: { far = $0 }),
+                    now: now,
+                    onSave: {},
+                    dayListOpen: true
+                )
+            },
+            size: NSSize(width: SideDrawer<EmptyView>.width, height: 770),
             to: "/tmp/itimer-composer-far.png"
         )
         var pending = ScheduleDraft.new(title: "接入 AI #想法", asOf: now)
         pending.hasTime = false
         render(
-            ScheduleComposer(
-                draft: Binding(get: { pending }, set: { pending = $0 }),
-                now: now,
-                onSave: {}, onStartNow: {}, onCancel: {}
-            )
-            .padding(16),
-            size: NSSize(width: 380, height: 460),
+            SideDrawer(title: "新建日程", onClose: {}) {
+                ScheduleComposer(
+                    draft: Binding(get: { pending }, set: { pending = $0 }),
+                    now: now,
+                    onSave: {}
+                )
+            },
+            size: NSSize(width: SideDrawer<EmptyView>.width, height: 510),
             to: "/tmp/itimer-composer-undated.png"
         )
         guard let child = store.addSubtask(parentID: review.id, title: "看完鉴权模块") else {
             note("subtask failed")
             return false
         }
-        // The row's "add subtask" field: undated, and shown in the parent's
-        // progress count.
+        // The details drawer's "add subtask" field: undated, and shown in the
+        // parent's progress count.
         guard let step = store.addSchedule(title: "补单测 #测试", parentID: review.id, start: nil, plannedDuration: nil, reminderLead: nil),
               step.isUndated, step.parentID == review.id, step.tags == ["测试"],
               store.subtasks(of: review.id).count == 2 else {
@@ -717,6 +722,226 @@ enum SelfTest {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
+    }
+}
+
+// MARK: - Side drawer
+
+extension SelfTest {
+    /// The task list's side drawer: a row's edit button opens its details
+    /// beside the list (main window) or over it (panel); name, subtasks and
+    /// progress are edited there; rows carry no note or subtask buttons.
+    /// Window events only, so it also runs in background mode.
+    static func exerciseDrawer() async -> Bool {
+        let store = TaskStore.shared
+        let now = Date()
+        guard let parent = store.addSchedule(title: "准备季度汇报 #汇报", start: now.addingTimeInterval(3 * 3600), plannedDuration: 3600, reminderLead: nil),
+              let step = store.addSchedule(title: "收集数据", parentID: parent.id, start: nil, plannedDuration: nil, reminderLead: nil),
+              let running = store.addTask(title: "回消息 #沟通", at: now.addingTimeInterval(-1500)),
+              let done = store.addTask(title: "整理周报", at: now.addingTimeInterval(-3600)) else {
+            note("drawer fixture could not be created")
+            return false
+        }
+        store.complete(id: done.id, at: now.addingTimeInterval(-600))
+        store.setNote(id: parent.id, "先对齐口径，再出图。")
+        store.addComment(id: parent.id, text: "数据源确认完毕", at: now.addingTimeInterval(-900))
+
+        NSApp.windows.filter { $0.identifier?.rawValue.hasPrefix("main") == true }.forEach { $0.orderOut(nil) }
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 980, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "iTimer 侧边抽屉自检"
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = NSHostingView(rootView: MenuBarView(store: store, embedded: true).background(Theme.canvas))
+        await activateUnlessBackground()
+        bringForward(window)
+        defer { window.orderOut(nil) }
+        try? await Task.sleep(for: .milliseconds(600))
+
+        func present(_ identifier: String) -> Bool { find(identifier: identifier, depth: 40) != nil }
+        func press(_ identifier: String) -> Bool {
+            guard let element = find(identifier: identifier, depth: 40) else {
+                note("missing \(identifier)")
+                return false
+            }
+            return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+        /// Clicks a text field and returns its field editor once it has focus.
+        func focusField(_ identifier: String, in window: NSWindow, holding text: String) async -> NSTextView? {
+            guard let element = find(identifier: identifier, depth: 40), let center = screenCenter(of: element) else {
+                note("missing field \(identifier)")
+                return nil
+            }
+            await click(in: window, at: window.convertPoint(fromScreen: center))
+            guard await wait(for: 2, label: "focus \(identifier)", until: {
+                (window.firstResponder as? NSTextView)?.string == text
+            }) else { return nil }
+            return window.firstResponder as? NSTextView
+        }
+        let id = { (task: TaskItem) in task.id.uuidString }
+
+        guard present("edit-task-\(id(parent))"), present("edit-task-\(id(done))"),
+              !present("journal-\(id(parent))"), !present("add-subtask-\(id(parent))"),
+              !present("journal-\(id(done))") else {
+            note("rows still carry note or subtask buttons, or lack the edit button: edit=\(present("edit-task-\(id(parent))")) doneEdit=\(present("edit-task-\(id(done))")) row=\(present("task-row-\(id(parent))")) panel=\(present("menu-panel")) windows=\(windowSummary())")
+            return false
+        }
+        note("rows offer the edit button only")
+
+        // 全部 folds a section from its title and remembers it; the app's
+        // defaults are the user's, so put them back after.
+        let defaults = UserDefaults.standard
+        let savedSections = defaults.string(forKey: "collapsedSections")
+        defer { defaults.set(savedSections, forKey: "collapsedSections") }
+        defaults.set("", forKey: "collapsedSections")
+        try? await Task.sleep(for: .milliseconds(200))
+        guard press("toggle-section-upcoming"),
+              await wait(for: 2, label: "接下来 folded", until: {
+                  !present("task-row-\(id(parent))") && !present("task-row-\(id(step))")
+              }),
+              present("task-row-\(id(running))"),
+              defaults.string(forKey: "collapsedSections") == "upcoming",
+              press("toggle-section-doneToday"),
+              await wait(for: 2, label: "今日完成 folded", until: { !present("done-row-\(id(done))") }) else {
+            note("sections did not fold from their titles: \(defaults.string(forKey: "collapsedSections") ?? "nil")")
+            return false
+        }
+        snapshot(window, to: "/tmp/itimer-sections-folded.png")
+        guard press("toggle-section-upcoming"), press("toggle-section-doneToday"),
+              await wait(for: 2, label: "sections unfolded", until: {
+                  present("task-row-\(id(parent))") && present("done-row-\(id(done))")
+              }),
+              defaults.string(forKey: "collapsedSections") == "" else {
+            note("sections did not unfold: \(defaults.string(forKey: "collapsedSections") ?? "nil")")
+            return false
+        }
+        note("全部 folds and unfolds sections from their titles and remembers it")
+
+        guard press("edit-task-\(id(parent))"),
+              await wait(for: 3, label: "details drawer", until: { present("task-detail") }) else { return false }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard let drawer = find(identifier: "side-drawer", depth: 40).flatMap(screenCenter(of:)),
+              window.convertPoint(fromScreen: drawer).x > window.frame.width * 0.6,
+              present("task-row-\(id(running))"), present("journal-note"), present("detail-subtask-\(id(step))") else {
+            note("details did not open in a right-hand drawer beside the list")
+            return false
+        }
+        snapshot(window, to: "/tmp/itimer-drawer-main.png")
+        window.appearance = NSAppearance(named: .darkAqua)
+        try? await Task.sleep(for: .milliseconds(150))
+        snapshot(window, to: "/tmp/itimer-drawer-main-dark.png")
+        window.appearance = NSAppearance(named: .aqua)
+        note("edit opened the details beside the list: schedule, subtasks, note and progress")
+
+        // The name saves itself after a pause; `#` moves into the tags.
+        guard let title = await focusField("schedule-title", in: window, holding: parent.title) else { return false }
+        title.selectAll(nil)
+        title.insertText("准备年度汇报 #复盘", replacementRange: NSRange(location: NSNotFound, length: 0))
+        guard await wait(for: 3, label: "name saved", until: {
+            store.tasks.first { $0.id == parent.id }.map { $0.title == "准备年度汇报" && $0.tags == ["汇报", "复盘"] } ?? false
+        }) else {
+            note("name edit did not save: \(store.tasks.first { $0.id == parent.id }.map { "\($0.title) \($0.tags)" } ?? "gone")")
+            return false
+        }
+        note("name and tags saved from the drawer without a Save button")
+
+        guard let field = await focusField("subtask-input-\(id(parent))", in: window, holding: "") else { return false }
+        field.insertText("整理图表", replacementRange: NSRange(location: NSNotFound, length: 0))
+        await key(in: window, characters: "\r", code: 36)
+        guard await wait(for: 2, label: "subtask added", until: {
+            store.subtasks(of: parent.id).contains { $0.title == "整理图表" && $0.isUndated && $0.isPending }
+        }), await wait(for: 2, label: "field kept", until: {
+            (window.firstResponder as? NSTextView)?.string == ""
+        }) else {
+            note("subtask field did not add an undated step and stay ready")
+            return false
+        }
+        note("subtask added from the drawer; field ready for the next")
+
+        guard press("detail-subtask-\(id(step))"),
+              await wait(for: 2, label: "subtask details", until: { present("task-detail-parent") }),
+              press("task-detail-parent"),
+              await wait(for: 2, label: "parent details", until: { present("subtask-input-\(id(parent))") }) else {
+            note("could not move between a subtask's and its parent's details")
+            return false
+        }
+        note("drawer moves between a subtask and its parent")
+
+        guard press("edit-task-\(id(parent))"),
+              await wait(for: 2, label: "toggle closed", until: { !present("side-drawer") }) else {
+            note("the edit button did not close its own details")
+            return false
+        }
+        guard press("edit-task-\(id(done))"),
+              await wait(for: 2, label: "done details", until: { present("task-detail") }),
+              present("schedule-title"), !present("schedule-duration"), !present("subtask-input-\(id(done))") else {
+            note("finished task details should offer name, tags and journal only")
+            return false
+        }
+        guard press("drawer-close"),
+              await wait(for: 2, label: "closed", until: { !present("side-drawer") }) else { return false }
+        note("finished task opens name, tags and journal; close button closes")
+        window.orderOut(nil)
+
+        // The fixed-width panel: the drawer slides over the list.
+        let panel = NSWindow(contentRect: NSRect(x: 160, y: 120, width: 380, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "iTimer 面板抽屉自检"
+        panel.isReleasedWhenClosed = false
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.contentView = NSHostingView(rootView: MenuBarView(store: store).background(.regularMaterial))
+        bringForward(panel)
+        defer { panel.orderOut(nil) }
+        try? await Task.sleep(for: .milliseconds(600))
+        guard !present("toggle-section-upcoming") else {
+            note("the panel should not fold sections")
+            return false
+        }
+        guard press("edit-task-\(id(parent))"),
+              await wait(for: 3, label: "panel drawer", until: { present("task-detail") && present("drawer-scrim") }) else {
+            note("panel drawer did not open over the list")
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        snapshot(panel, to: "/tmp/itimer-drawer-popup.png")
+        // The scrim covers 日程, so close first, as a user would.
+        guard press("drawer-close"),
+              await wait(for: 2, label: "panel closed", until: { !present("side-drawer") }),
+              press("new-schedule"),
+              await wait(for: 3, label: "panel composer", until: { present("schedule-composer") && present("schedule-start-now") }) else {
+            note("新建日程 did not open in the drawer")
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        snapshot(panel, to: "/tmp/itimer-drawer-popup-new.png")
+        note("panel: details and 新建日程 slide over the list")
+
+        // Closing must stick, and add nothing, while the name field still
+        // has focus and text: the field commits as it leaves.
+        let schedules = store.tasks.count
+        for (way, close) in [("close button", { press("drawer-close") }), ("Esc", { await key(in: panel, characters: "\u{1B}", code: 53); return true })] as [(String, () async -> Bool)] {
+            if !present("schedule-composer") {
+                guard press("new-schedule"),
+                      await wait(for: 3, label: "composer again", until: { present("schedule-composer") }) else { return false }
+            }
+            guard await wait(for: 2, label: "name focus", until: { panel.firstResponder is NSTextView }),
+                  let name = panel.firstResponder as? NSTextView else {
+                note("新建日程 did not focus its name field")
+                return false
+            }
+            name.insertText("先不排了", replacementRange: NSRange(location: NSNotFound, length: 0))
+            try? await Task.sleep(for: .milliseconds(200))
+            guard await close(),
+                  await wait(for: 2, label: "composer closed (\(way))", until: { !present("side-drawer") }) else {
+                note("新建日程 did not close with the \(way)")
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !present("side-drawer"), store.tasks.count == schedules else {
+                note("新建日程 reopened after closing with the \(way): drawer=\(present("side-drawer")) added=\(store.tasks.count - schedules)")
+                return false
+            }
+            note("新建日程 stays closed after the \(way), nothing added")
+        }
+        return true
     }
 }
 

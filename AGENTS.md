@@ -53,4 +53,4 @@ iTimer 是一个 macOS 菜单栏计时器，用 SwiftUI 写，Swift Package 管�
 swift test                       # 核心逻辑测试
 ```
 
-界面自测在 `Sources/ITimer/SelfTest.swift`。`goal`、`workflow` 两个场景支持 background 模式：不激活 App，事件直接发给窗口，不占用前台和鼠标。
+界面自测在 `Sources/ITimer/SelfTest.swift`。`goal`、`workflow`、`record`、`drawer` 几个场景支持 background 模式：不激活 App，事件直接发给窗口，不占用前台和鼠标。
