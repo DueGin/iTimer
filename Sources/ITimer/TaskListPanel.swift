@@ -141,6 +141,7 @@ struct TaskListPanel: View {
             }
         }
         .listStyle(.sidebar)
+        .overlayScrollers()
         .safeAreaInset(edge: .top, spacing: 0) {
             ListPanelHeader(title: MainModule.tasks.title, addHelp: "新建任务（⌘N）") {
                 NotificationCenter.default.post(name: .iTimerFocusNewTask, object: nil)

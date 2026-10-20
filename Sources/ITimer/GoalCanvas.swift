@@ -374,6 +374,7 @@ struct GoalNoteEditor: View {
                 TextEditor(text: $note)
                     .font(.callout)
                     .scrollContentBackground(.hidden)
+                    .overlayScrollers()
                     .frame(minHeight: 90, maxHeight: 160)
                     .padding(6)
                     .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))

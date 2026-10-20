@@ -47,6 +47,7 @@ struct JournalView: View {
             TextEditor(text: $note)
                 .font(.callout)
                 .scrollContentBackground(.hidden)
+                .overlayScrollers()
                 .frame(minHeight: 64, maxHeight: 110)
                 .padding(6)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))

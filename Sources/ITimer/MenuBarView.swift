@@ -19,6 +19,8 @@ struct MenuBarView: View {
     @State private var detailID: UUID?
     /// Details opened to add a subtask: its field takes focus once.
     @State private var subtaskFocusID: UUID?
+    /// Height of the task list's scroll view.
+    @State private var listViewport: CGFloat = 0
     /// Completed timing draft, kept stable while the observable clock ticks.
     @State private var recordToEdit: TaskItem?
     /// Brain buddy's speech; replaces the verdict line for a few seconds.
@@ -125,6 +127,7 @@ struct MenuBarView: View {
                     .padding(18)
                     .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
+                    .background { drawerDismissArea }
                 if drawerOpen {
                     HStack(spacing: 0) {
                         Divider()
@@ -159,6 +162,19 @@ struct MenuBarView: View {
     }
 
     private var drawerOpen: Bool { composer != nil || detailTask != nil }
+
+    /// Behind the main window's list: a click on its empty space closes the
+    /// drawer, as the strip of list left showing does in the panel. Rows,
+    /// cards and controls stay in front and work as usual.
+    @ViewBuilder
+    private var drawerDismissArea: some View {
+        if embedded && drawerOpen {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(perform: closeDrawer)
+                .accessibilityHidden(true)
+        }
+    }
 
     @ViewBuilder
     private func drawer(now: Date) -> some View {
@@ -498,9 +514,15 @@ struct MenuBarView: View {
                         }
                     }
                 }
+                .padding(.bottom, 12)
+                // The scroll view takes clicks on its own empty space, so the
+                // rows reach to its bottom with the drawer's dismiss area
+                // behind them.
+                .frame(maxWidth: .infinity, minHeight: embedded ? listViewport : nil, alignment: .topLeading)
+                .background { drawerDismissArea }
             }
             .scrollIndicators(.never)
-            .contentMargins(.bottom, 12, for: .scrollContent)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listViewport = $0 }
             .mask(EdgeFade(edge: .bottom))
             // Fills whatever the latched panel height leaves; scrolls beyond.
             .frame(maxHeight: .infinity, alignment: .top)

@@ -308,6 +308,7 @@ struct MilestoneInspector: View {
                 TextEditor(text: $criteria)
                     .font(.callout)
                     .scrollContentBackground(.hidden)
+                    .overlayScrollers()
                     .frame(minHeight: 54, maxHeight: 90)
                     .padding(6)
                     .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))

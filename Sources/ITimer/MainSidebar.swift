@@ -209,6 +209,7 @@ struct MainSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .overlayScrollers()
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 ListPanelHeader(

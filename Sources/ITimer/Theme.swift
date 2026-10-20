@@ -145,6 +145,89 @@ extension View {
     func cardSurface(padding: CGFloat = 16) -> some View {
         modifier(CardSurface(padding: padding))
     }
+
+    /// Lists and text editors keep the thin scrollers that fade out, even
+    /// with a mouse connected: the always-on track reads as a white strip
+    /// down the side and takes 15 pt from the content.
+    func overlayScrollers() -> some View {
+        background(OverlayScrollers())
+    }
+}
+
+/// Finds the scroll view of the list or text editor it backs by position
+/// (it sits beside this view, not above it) and holds it on the overlay
+/// style.
+private struct OverlayScrollers: NSViewRepresentable {
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) { view.apply() }
+
+    final class Probe: NSView {
+        private weak var scrollView: NSScrollView?
+        private var styleObservation: NSKeyValueObservation?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scrollView = nil
+            styleObservation = nil
+            if window != nil { retry(10) }
+        }
+
+        /// The scroll view can reach the window, or get its frame, a beat
+        /// after this view does.
+        private func retry(_ attempts: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.apply()
+                if self.scrollView == nil, attempts > 1 { self.retry(attempts - 1) }
+            }
+        }
+
+        func apply() {
+            guard let scrollView = scrollView ?? findScrollView() else { return }
+            if self.scrollView !== scrollView {
+                self.scrollView = scrollView
+                // SwiftUI puts the scroll view back on the system style
+                // whenever it updates it, and AppKit does when a mouse comes
+                // or goes: switch it straight back, before anything draws.
+                styleObservation = scrollView.observe(\.scrollerStyle) { scroll, _ in
+                    MainActor.assumeIsolated {
+                        if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
+                    }
+                }
+            }
+            if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
+        }
+
+        /// The nearest list or text scroll view under this view's center.
+        /// Scroll views around it (a sheet's own ScrollView) are its
+        /// ancestors, so they are reached only after its siblings.
+        private func findScrollView() -> NSScrollView? {
+            guard window != nil, !bounds.isEmpty else { return nil }
+            let center = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: nil)
+            var ancestor = superview
+            while let view = ancestor {
+                if let found = Self.scrollView(in: view, containing: center) { return found }
+                ancestor = view.superview
+            }
+            return nil
+        }
+
+        private static func scrollView(in view: NSView, containing point: NSPoint) -> NSScrollView? {
+            for subview in view.subviews {
+                if let scroll = subview as? NSScrollView {
+                    if scroll.documentView is NSTableView || scroll.documentView is NSTextView,
+                       scroll.convert(scroll.bounds, to: nil).contains(point) {
+                        return scroll
+                    }
+                } else if let found = scrollView(in: subview, containing: point) {
+                    return found
+                }
+            }
+            return nil
+        }
+    }
 }
 
 /// Breathing status dot.

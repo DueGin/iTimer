@@ -616,6 +616,11 @@ enum SelfTest {
 
     /// Screen point (AppKit, bottom-left origin) at the element's center.
     private static func screenCenter(of element: AXUIElement) -> NSPoint? {
+        screenFrame(of: element).map { NSPoint(x: $0.midX, y: $0.midY) }
+    }
+
+    /// The element's frame on screen (AppKit, bottom-left origin).
+    private static func screenFrame(of element: AXUIElement) -> NSRect? {
         var position: CFTypeRef?
         var size: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
@@ -626,7 +631,7 @@ enum SelfTest {
         AXValueGetValue(position as! AXValue, .cgPoint, &origin)
         AXValueGetValue(size as! AXValue, .cgSize, &extent)
         let top = NSScreen.screens.first?.frame.maxY ?? 0
-        return NSPoint(x: origin.x + extent.width / 2, y: top - (origin.y + extent.height / 2))
+        return NSRect(x: origin.x, y: top - origin.y - extent.height, width: extent.width, height: extent.height)
     }
 
     private static func clickStatusItem() -> Bool {
@@ -938,6 +943,14 @@ extension SelfTest {
         snapshot(window, to: "/tmp/itimer-drawer-main-dark.png")
         window.appearance = NSAppearance(named: .aqua)
         note("edit opened the details beside the list: schedule, subtasks, note and progress")
+        let noteEditors = { collect(NSScrollView.self, in: window.contentView).filter { $0.documentView is NSTextView } }
+        guard await wait(for: 2, label: "note scroller", until: {
+            !noteEditors().isEmpty && noteEditors().allSatisfy { $0.scrollerStyle == .overlay }
+        }) else {
+            note("note editor scroller style=\(noteEditors().map(\.scrollerStyle.rawValue))")
+            return false
+        }
+        note("the note editor keeps overlay scrollers")
 
         // The name saves itself after a pause; `#` moves into the tags.
         guard let title = await focusField("schedule-title", in: window, holding: parent.title) else { return false }
@@ -978,6 +991,57 @@ extension SelfTest {
             note("the edit button did not close its own details")
             return false
         }
+
+        // A click on the list's empty space closes the drawer: the page
+        // margin, and the space below the last row. A click on a row does
+        // not; the list stays usable beside the drawer.
+        func windowFrame(_ identifier: String) -> NSRect? {
+            find(identifier: identifier, depth: 40).flatMap(screenFrame(of:)).map { window.convertFromScreen($0) }
+        }
+        let blanks: [(String, () -> NSPoint?)] = [
+            ("page margin", { windowFrame("hero-timer").map { NSPoint(x: 6, y: $0.minY - 40) } }),
+            ("space below the rows", {
+                guard let last = windowFrame("done-row-\(id(done))"), let input = windowFrame("new-task-field"),
+                      last.minY - input.maxY > 40 else { return nil }
+                return NSPoint(x: last.midX, y: (last.minY + input.maxY) / 2)
+            }),
+        ]
+        for (place, point) in blanks {
+            guard press("edit-task-\(id(parent))"),
+                  await wait(for: 2, label: "drawer for \(place)", until: { present("task-detail") }) else { return false }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let point = point() else { note("no \(place) to click"); return false }
+            await click(in: window, at: point)
+            guard await wait(for: 2, label: "closed by \(place)", until: { !present("side-drawer") }) else {
+                snapshot(window, to: "/tmp/itimer-drawer-blank-failure.png")
+                note("a click on the \(place) at \(point) did not close the drawer")
+                return false
+            }
+        }
+        guard press("edit-task-\(id(parent))"),
+              await wait(for: 2, label: "drawer for row click", until: { present("task-detail") }),
+              let row = windowFrame("task-row-\(id(running))") else { return false }
+        await click(in: window, at: NSPoint(x: row.midX, y: row.midY))
+        try? await Task.sleep(for: .milliseconds(400))
+        guard present("task-detail") else {
+            note("a click on a row closed the drawer")
+            return false
+        }
+        guard press("drawer-close"),
+              await wait(for: 2, label: "closed after row click", until: { !present("side-drawer") }) else { return false }
+        let count = store.tasks.count
+        guard press("new-schedule"),
+              await wait(for: 3, label: "main composer", until: { present("schedule-composer") }),
+              let margin = blanks[0].1() else { return false }
+        try? await Task.sleep(for: .milliseconds(300))
+        await click(in: window, at: margin)
+        guard await wait(for: 2, label: "composer closed by margin", until: { !present("side-drawer") }),
+              store.tasks.count == count else {
+            note("a click on the page margin did not close 新建日程, or added one")
+            return false
+        }
+        note("a click on the list's empty space closes the drawer (details and 新建日程); a click on a row does not")
+
         guard press("edit-task-\(id(done))"),
               await wait(for: 2, label: "done details", until: { present("task-detail") }),
               present("schedule-title"), !present("schedule-duration"), !present("subtask-input-\(id(done))") else {
@@ -1504,6 +1568,19 @@ extension SelfTest {
         window.appearance = NSAppearance(named: .aqua)
         try? await Task.sleep(for: .milliseconds(500))
 
+        // With a mouse connected the list's always-on scroller track showed
+        // as a white strip; it keeps the thin overlay scroller, and gets it
+        // back when SwiftUI or AppKit resets the style.
+        let lists = { collect(NSScrollView.self, in: window.contentView).filter { $0.documentView is NSTableView } }
+        guard await wait(for: 2, label: "overlay scrollers", until: {
+            !lists().isEmpty && lists().allSatisfy { $0.scrollerStyle == .overlay }
+        }) else { note("sidebar list scroller style=\(lists().map(\.scrollerStyle.rawValue))"); return false }
+        lists().forEach { $0.scrollerStyle = .legacy }
+        guard lists().allSatisfy({ $0.scrollerStyle == .overlay }) else {
+            note("sidebar list kept the legacy scroller after a reset"); return false
+        }
+        note("goal list keeps overlay scrollers, also after a style reset")
+
         func visibleGoal(_ id: UUID) -> Bool { find(identifier: "sidebar-goal-\(id.uuidString)", depth: 24) != nil }
         func visibleMilestone(_ id: UUID) -> Bool { find(identifier: "sidebar-workflow-\(id.uuidString)", depth: 24) != nil }
         func destination() -> String? { defaults.string(forKey: "mainDestination") }
@@ -1667,6 +1744,31 @@ extension SelfTest {
             return false
         }
         note("card button reached 首批付费 straight from 等待上游; undone")
+
+        // The text editors in the card's and the goal's popovers keep thin
+        // overlay scrollers; the always-on track showed as a white strip.
+        func editorScrollViews(_ target: NSWindow) -> [NSScrollView] {
+            collect(NSScrollView.self, in: target.contentView).filter { $0.documentView is NSTextView }
+        }
+        func popover() -> NSWindow? {
+            NSApp.windows.first { $0 !== window && $0.isVisible && !editorScrollViews($0).isEmpty }
+        }
+        for (opener, label) in [("milestone-inspect-\(second.id.uuidString)", "完成标准"), ("goal-edit-note", "目标说明")] {
+            guard pressElement(opener),
+                  await wait(for: 3, label: "\(label) editor", until: {
+                      popover().map { editorScrollViews($0).allSatisfy { $0.scrollerStyle == .overlay } } ?? false
+                  }), let shown = popover() else {
+                note("\(label) editor scroller style=\(popover().map { editorScrollViews($0).map(\.scrollerStyle.rawValue) } ?? [])")
+                return false
+            }
+            shown.makeFirstResponder(nil)
+            await key(in: shown, characters: "\u{1B}", code: 53)
+            guard await wait(for: 2, label: "\(label) closed", until: { popover() == nil }) else {
+                note("\(label) popover did not close on Esc")
+                return false
+            }
+        }
+        note("the 完成标准 and 目标说明 editors keep overlay scrollers")
 
         await click(in: window, at: spot(-card.width / 2 + 40, card.height / 2 - 14), count: 2)
         guard await wait(for: 3, label: "open milestone", until: {
