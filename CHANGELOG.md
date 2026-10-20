@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.13.0] - 2026-10-20
+
 ### 新增
 
 - 里程碑卡片右下角随时有「标记达成」按钮：任务没做完也能直接标记，不用等任务都做完；已达成后从右键菜单「撤销达成」还原。
@@ -226,7 +228,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.12.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/DueGin/iTimer/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/DueGin/iTimer/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/DueGin/iTimer/compare/v1.10.5...v1.11.0
 [1.10.5]: https://github.com/DueGin/iTimer/compare/v1.10.4...v1.10.5
