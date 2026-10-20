@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [1.13.1] - 2026-10-20
+
 ### 变更
 
 - 主窗口「任务」页里，任务详情和新建日程的右侧抽屉可以点列表的空白处关闭，不用再去点 × 或按 Esc；点任务行和上面的按钮照常操作，不会关掉抽屉。
@@ -237,7 +239,8 @@
 
 - 在面板里暂停、完成任务时，面板不再塌掉或自己关上：面板开着时冻结菜单栏文字，并锁定面板高度。
 
-[未发布]: https://github.com/DueGin/iTimer/compare/v1.13.0...HEAD
+[未发布]: https://github.com/DueGin/iTimer/compare/v1.13.1...HEAD
+[1.13.1]: https://github.com/DueGin/iTimer/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/DueGin/iTimer/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/DueGin/iTimer/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/DueGin/iTimer/compare/v1.10.5...v1.11.0
