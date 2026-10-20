@@ -204,6 +204,11 @@ struct MainView: View {
                             .accessibilityIdentifier("back-to-roadmap")
                         }
                     }
+                    if goal != nil {
+                        ToolbarItem(placement: .navigation) {
+                            milestoneAchieveControl(workflowID: id)
+                        }
+                    }
                 }
         case .goal(let id):
             GoalCanvasView(store: store, goalID: id) { workflowID in
@@ -226,5 +231,31 @@ struct MainView: View {
         MainRouter.shared.pendingRename = .workflow(workflow.id)
         listCollapsed = false
         go(.workflow(workflow.id))
+    }
+
+    /// 标记达成 inside the milestone's workflow: allowed at any state, so
+    /// tasks left undone stay as they are. Orange while 待确认, like the
+    /// roadmap card waiting on a yes.
+    @ViewBuilder
+    private func milestoneAchieveControl(workflowID: UUID) -> some View {
+        if store.workflow(id: workflowID)?.achievedAt != nil {
+            Menu {
+                Button("撤销达成") { store.setMilestoneAchieved(workflowID: workflowID, false) }
+            } label: {
+                Label("已达成", systemImage: "checkmark.circle.fill")
+            }
+            .help("里程碑已达成")
+            .accessibilityIdentifier("milestone-achieved-toolbar-\(workflowID.uuidString)")
+        } else {
+            let review = store.milestoneSummary(of: workflowID)?.state == .review
+            Button {
+                store.setMilestoneAchieved(workflowID: workflowID, true)
+            } label: {
+                Label("标记达成", systemImage: "checkmark.circle")
+            }
+            .tint(review ? Color.orange : nil)
+            .help(review ? "任务都做完了，达成了吗？" : "任务没做完也可以直接标记达成")
+            .accessibilityIdentifier("milestone-achieve-toolbar-\(workflowID.uuidString)")
+        }
     }
 }

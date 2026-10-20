@@ -1655,6 +1655,19 @@ extension SelfTest {
         }
         note("port drag wired 内测 → 首批付费, which now waits")
 
+        // A milestone card carries 标记达成 at any state, not only 待确认.
+        guard pressElement("milestone-achieve-icon-\(second.id.uuidString)"),
+              await wait(for: 2, label: "achieved from card", until: { states()[second.id] == .achieved }) else {
+            note("首批付费's card offered no 标记达成 button: \(String(describing: states()[second.id]))")
+            return false
+        }
+        store.setMilestoneAchieved(workflowID: second.id, false)
+        guard await wait(for: 2, label: "blocked again", until: { states()[second.id] == .blocked }) else {
+            note("undoing 首批付费 did not block it again: \(String(describing: states()[second.id]))")
+            return false
+        }
+        note("card button reached 首批付费 straight from 等待上游; undone")
+
         await click(in: window, at: spot(-card.width / 2 + 40, card.height / 2 - 14), count: 2)
         guard await wait(for: 3, label: "open milestone", until: {
             UserDefaults.standard.string(forKey: "mainDestination") == MainDestination.workflow(first.id).raw
@@ -1689,6 +1702,35 @@ extension SelfTest {
         }
         note("标记达成 reached 内测 and 首批付费 became ready")
         snapshot(window, to: "/tmp/itimer-goal.png")
+
+        // Inside a milestone's workflow the toolbar marks it reached at any
+        // state — 首批付费 has no tasks done yet.
+        UserDefaults.standard.set(MainDestination.workflow(second.id).raw, forKey: "mainDestination")
+        guard await wait(for: 3, label: "open 首批付费", until: {
+            find(identifier: "back-to-roadmap") != nil
+                && find(identifier: "milestone-achieve-toolbar-\(second.id.uuidString)") != nil
+        }) else {
+            note("首批付费's workflow offered no toolbar 标记达成")
+            return false
+        }
+        guard pressElement("milestone-achieve-toolbar-\(second.id.uuidString)"),
+              await wait(for: 3, label: "achieved in workflow", until: {
+                  states()[second.id] == .achieved
+                      && find(identifier: "milestone-achieved-toolbar-\(second.id.uuidString)") != nil
+              }) else {
+            note("toolbar 标记达成 did not reach 首批付费: \(String(describing: states()[second.id]))")
+            return false
+        }
+        note("inside its workflow, 标记达成 reached 首批付费 with no tasks done")
+        snapshot(window, to: "/tmp/itimer-goal-workflow.png")
+        guard let backAgain = find(identifier: "back-to-roadmap"),
+              AXUIElementPerformAction(backAgain, kAXPressAction as CFString) == .success,
+              await wait(for: 3, label: "back to roadmap", until: {
+                  UserDefaults.standard.string(forKey: "mainDestination") == MainDestination.goal(goal.id).raw
+              }) else {
+            note("返回路线图 did not bring the roadmap back")
+            return false
+        }
 
         guard await exerciseRail(in: window, goal: goal) else { return false }
 

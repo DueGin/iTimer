@@ -234,6 +234,12 @@ struct MilestoneCard: View {
                 action: onToggleExpanded
             )
         }
+        // 待确认时左下角已有醒目的「标记达成」，达成后标题旁有 ✓。
+        if workflow.achievedAt == nil && summary.state != .review {
+            IconButton(title: "标记达成", systemImage: "checkmark.circle", identifier: "milestone-achieve-icon-\(id)") {
+                store.setMilestoneAchieved(workflowID: workflow.id, true)
+            }
+        }
         IconButton(title: "目标日期与完成标准", systemImage: "calendar.badge.clock", identifier: "milestone-inspect-\(id)") {
             inspecting = true
         }
